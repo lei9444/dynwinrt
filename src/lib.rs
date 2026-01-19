@@ -1,28 +1,45 @@
-use windows::{
-    Data::Xml::Dom::*, Win32::Foundation::*, Win32::System::Threading::*,
-    Win32::UI::WindowsAndMessaging::*, core::*,
-};
+use windows::{Data::Xml::Dom::*, Win32::UI::WindowsAndMessaging::*, core::*};
 
 mod call;
 mod value;
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+pub fn export_add(x: f64, y: &f64) -> f64 {
+    return x + y;
 }
+
+pub fn uri_vtable() -> value::VTableSignature {
+    let mut vtable = value::VTableSignature::new();
+    vtable
+        .add_method(|m| m) // 0 QueryInterface
+        .add_method(|m| m) // 1 AddRef
+        .add_method(|m| m) // 2 Release
+        .add_method(|m| m) // 3 GetIids
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 4 GetRuntimeClassName
+        .add_method(|m| m) // 5 GetTrustLevel
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 6 get_AbsoluteUri
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 7 get_DisplayUri
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 8 get_Domain
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 9 get_Extension
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 10 get_Fragment
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 11 get_Host
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 12 get_Password
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 13 get_Path
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 14 get_Query
+        .add_method(|m| m) // 15 get_QueryParsed
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 16 get_RawUri
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 17 get_SchemeName
+        .add_method(|m| m.add_out(value::WinRTType::HString)) // 18 get_UserName
+        .add_method(|m| m.add_out(value::WinRTType::I32)) // 19 get_Port
+        .add_method(|m| m); // 20 get_Suspicious;
+    vtable
+}
+
+pub use crate::value::VTableSignature;
+pub use crate::value::WinRTType;
 
 #[cfg(test)]
 mod tests {
-    use libffi::raw::ffi_abi_FFI_WIN64;
-
-    use crate::call::{DWinRTHRESULTValue, DWinRTPointerValue, DWinRTValueUnion};
-
     use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
 
     #[test]
     fn simple_windows_api_should_work() -> Result<()> {
@@ -33,15 +50,15 @@ mod tests {
         assert!(root.NodeName()? == "html");
         assert!(root.InnerText()? == "hello world");
 
-        unsafe {
-            let event = CreateEventW(None, true, false, None)?;
-            SetEvent(event)?;
-            WaitForSingleObject(event, 0);
-            CloseHandle(event)?;
+        // unsafe {
+        //     let event = CreateEventW(None, true, false, None)?;
+        //     SetEvent(event)?;
+        //     WaitForSingleObject(event, 0);
+        //     CloseHandle(event)?;
 
-            MessageBoxA(None, s!("Ansi"), s!("Caption"), MB_OK);
-            MessageBoxW(None, w!("Wide测试"), w!("Caption"), MB_OK);
-        }
+        //     MessageBoxA(None, s!("Ansi"), s!("Caption"), MB_OK);
+        //     MessageBoxW(None, w!("Wide测试"), w!("Caption"), MB_OK);
+        // }
 
         Ok(())
     }
@@ -49,7 +66,8 @@ mod tests {
     #[test]
     fn test_winrt_uri() -> Result<()> {
         use windows::Foundation::Uri;
-
+        println!("URI guid = {:?} ...", Uri::IID);
+        println!("URI name = {:?} ...", Uri::NAME);
         let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment"))?;
         assert_eq!(uri.SchemeName()?, "https");
         assert_eq!(uri.Host()?, "www.example.com");
@@ -61,53 +79,10 @@ mod tests {
     }
 
     #[test]
-    fn test_winrt_uri_interop() -> Result<()> {
-        use windows::Foundation::Uri;
-        println!("URI guid = {:?} ...", Uri::IID);
-        println!("URI name = {:?} ...", Uri::NAME);
-
-        let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment"))?;
-        unsafe {
-            let raw = uri.as_raw();
-            let ukn: IUnknown = uri.cast().expect("Cast to IUnknown should always work");
-
-            // IUriRuntimeClass layout:
-            // 0-2: IUnknown
-            // 3-5: IInspectable
-            // 6: get_AbsoluteUri
-            // ...
-            // 17: get_SchemeName
-
-            // type GetSchemeName = extern "system" fn(*mut std::ffi::c_void, *mut HSTRING) -> HRESULT;
-            // let get_scheme_name: GetSchemeName = std::mem::transmute(get_scheme_name_ptr);
-
-            // let mut scheme = HSTRING::new();
-            // // get_scheme_name(raw, &mut scheme).ok()?;
-            // let result = interface::call_method_ptr_ptr_ret_hresult(
-            //     interface::DynWinRTValue::Pointer(raw as *mut std::ffi::c_void),
-            //     get_scheme_name_ptr,
-            //     &[interface::DynWinRTValue::Pointer(
-            //         &mut scheme as *mut _ as *mut std::ffi::c_void,
-            //     )],
-            // );
-            let mut scheme = HSTRING::new();
-            let obj = DWinRTPointerValue::from_com_object(&uri);
-            let outPtr = DWinRTPointerValue::from_out_ptr(&mut scheme);
-            call::call_method_1(17, obj, outPtr);
-
-            assert_eq!(scheme, "https");
-        }
-
-        Ok(())
-    }
-
-    #[test]
     fn test_winrt_uri_interop_using_libffi() -> Result<()> {
         use libffi::middle::*;
         use std::ffi::c_void;
         use windows::Foundation::Uri;
-        println!("URI guid = {:?} ...", Uri::IID);
-        println!("URI name = {:?} ...", Uri::NAME);
 
         let uri = Uri::CreateUri(h!("http://www.example.com/path?query=1#fragment"))?;
         let mut hstr = HSTRING::new();
@@ -126,25 +101,75 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_winrt_uri_interop_using_argument() -> Result<()> {
-        use windows::Foundation::Uri;
-        println!("URI guid = {:?} ...", Uri::IID);
-        println!("URI name = {:?} ...", Uri::NAME);
+    // #[test]
+    // fn test_winrt_uri_interop_using_argument() -> Result<()> {
+    //     use windows::Foundation::Uri;
+    //     println!("URI guid = {:?} ...", Uri::IID);
+    //     println!("URI name = {:?} ...", Uri::NAME);
 
-        let s = HSTRING::new();
+    //     let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment"))?;
+    //     let mut out_hstr_arg = value::Argument::out_hstring();
+    //     let hr = call::call_method_dynamic(17, uri.as_raw(), &mut [&mut out_hstr_arg]);
+    //     hr.ok()?;
+    //     assert_eq!(out_hstr_arg.as_hstring(), "https");
+
+    //     let mut out_host = value::Argument::out_hstring();
+    //     let hr = call::call_method_dynamic(11, uri.as_raw(), &mut [&mut out_host]);
+    //     hr.ok()?;
+
+    //     assert_eq!(out_host.as_hstring(), "www.example.com");
+    //     Ok(())
+    // }
+
+    #[test]
+    fn test_winrt_uri_interop_using_signature() -> Result<()> {
+        use crate::call;
+        use crate::value;
+        use windows::Foundation::Uri;
 
         let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment"))?;
-        let mut out_hstr_arg = value::Argument::out_hstring();
-        let hr = call::call_method_with_values(17, uri.as_raw(), &mut [&mut out_hstr_arg]);
-        hr.ok()?;
-        assert_eq!(out_hstr_arg.as_hstring(), "https");
 
-        let mut out_host = value::Argument::out_hstring();
-        let hr = call::call_method_with_values(11, uri.as_raw(), &mut [&mut out_host]);
-        hr.ok()?;
+        // let mut vtable = value::VTableSignature::new();
+        // vtable
+        //     .add_method(|m| m) // 0 QueryInterface
+        //     .add_method(|m| m) // 1 AddRef
+        //     .add_method(|m| m) // 2 Release
+        //     .add_method(|m| m) // 3 GetIids
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 4 GetRuntimeClassName
+        //     .add_method(|m| m) // 5 GetTrustLevel
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 6 get_AbsoluteUri
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 7 get_DisplayUri
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 8 get_Domain
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 9 get_Extension
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 10 get_Fragment
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 11 get_Host
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 12 get_Password
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 13 get_Path
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 14 get_Query
+        //     .add_method(|m| m) // 15 get_QueryParsed
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 16 get_RawUri
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 17 get_SchemeName
+        //     .add_method(|m| m.add_out(value::WinRTType::HString)) // 18 get_UserName
+        //     .add_method(|m| m.add_out(value::WinRTType::I32)) // 19 get_Port
+        //     .add_method(|m| m); // 20 get_Suspicious;
+        let vtable = uri_vtable();
 
-        assert_eq!(out_host.as_hstring(), "www.example.com");
+        let get_runtime_classname = &vtable.methods[4];
+        assert_eq!(
+            get_runtime_classname.call(uri.as_raw(), &[])?[0].as_hstring(),
+            "Windows.Foundation.Uri"
+        );
+
+        let get_scheme = &vtable.methods[17];
+        let scheme = get_scheme.call(uri.as_raw(), &[])?;
+        assert_eq!(scheme[0].as_hstring(), "https");
+        let get_path = &vtable.methods[13];
+        let path = get_path.call(uri.as_raw(), &[])?;
+        assert_eq!(path[0].as_hstring(), "/path");
+        let get_port = &vtable.methods[19];
+        let port = get_port.call(uri.as_raw(), &[])?;
+        assert_eq!(port[0].as_i32(), 443);
+
         Ok(())
     }
 
