@@ -1,4 +1,4 @@
-use libffi::middle::{Arg, Cif, arg};
+use libffi::middle::Cif;
 
 use crate::{call, types::WinRTType, value::WinRTValue};
 
@@ -9,23 +9,21 @@ pub struct Parameter {
 }
 
 pub struct MethodSignature {
-    index: usize,
     out_count: usize,
     parameters: Vec<Parameter>,
-    cif: Option<Cif>,
+    return_type: WinRTType,
 }
 
 impl MethodSignature {
-    pub fn new(index: usize) -> Self {
+    pub fn new() -> Self {
         MethodSignature {
-            index,
             out_count: 0,
             parameters: Vec::new(),
-            cif: None,
+            return_type: WinRTType::HResult,
         }
     }
 
-    pub fn add(&mut self, typ: WinRTType) -> &mut Self {
+    pub fn add(mut self, typ: WinRTType) -> Self {
         self.parameters.push(Parameter {
             is_out: false,
             typ,
@@ -34,7 +32,7 @@ impl MethodSignature {
         self
     }
 
-    pub fn add_out(&mut self, typ: WinRTType) -> &mut Self {
+    pub fn add_out(mut self, typ: WinRTType) -> Self {
         self.parameters.push(Parameter {
             is_out: true,
             typ,
@@ -44,7 +42,7 @@ impl MethodSignature {
         self
     }
 
-    pub fn build_cif(&mut self) {
+    pub fn build(self, index: usize) -> Method {
         use libffi::middle::Type;
         let mut types: Vec<Type> = Vec::with_capacity(self.parameters.len() + 1);
         types.push(Type::pointer()); // com object's this pointer
@@ -53,39 +51,51 @@ impl MethodSignature {
                 // out parameters are always pointers
                 Type::pointer()
             } else {
-                param.typ.libffi_type()
+                param.typ.abi_type().libffi_type()
             })
         }
-        self.cif = Some(Cif::new(types.into_iter(), Type::i32()));
-    }
-
-    pub fn call_dynamic(
-        &self,
-        obj: *mut std::ffi::c_void,
-        args: &[WinRTValue],
-    ) -> windows_core::Result<Vec<WinRTValue>> {
-        call::call_winrt_method_dynamic(
-            self.index,
-            obj,
-            &self.parameters,
-            args,
-            self.out_count,
-            self.cif.as_ref().unwrap(),
-        )
+        let cif = Cif::new(types.into_iter(), self.return_type.abi_type().libffi_type());
+        Method {
+            info: MethodInfo {
+                index,
+                parameters: self.parameters,
+                out_count: self.out_count,
+            },
+            cif,
+        }
     }
 }
 
 pub struct MethodInfo {
     pub index: usize,
     pub parameters: Vec<Parameter>,
+    pub out_count: usize,
 }
-pub enum Method {
-    CifMethod { info: MethodInfo, cif: Cif },
-    PtrPtrMethod { info: MethodInfo },
+
+pub struct Method {
+    info: MethodInfo,
+    cif: Cif,
+}
+
+impl Method {
+    pub fn call_dynamic(
+        &self,
+        obj: *mut std::ffi::c_void,
+        args: &[WinRTValue],
+    ) -> windows_core::Result<Vec<WinRTValue>> {
+        call::call_winrt_method_dynamic(
+            self.info.index,
+            obj,
+            &self.info.parameters,
+            args,
+            self.info.out_count,
+            &self.cif,
+        )
+    }
 }
 
 pub struct VTableSignature {
-    pub methods: Vec<MethodSignature>,
+    pub methods: Vec<Method>,
 }
 
 impl VTableSignature {
@@ -95,13 +105,8 @@ impl VTableSignature {
         }
     }
 
-    pub fn add_method(
-        &mut self,
-        builder: fn(sig: &mut MethodSignature) -> &MethodSignature,
-    ) -> &mut Self {
-        let mut method = MethodSignature::new(self.methods.len());
-        builder(&mut method);
-        method.build_cif();
+    pub fn add_method(&mut self, signature: MethodSignature) -> &mut Self {
+        let method = signature.build(self.methods.len());
         self.methods.push(method);
         self
     }

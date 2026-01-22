@@ -1,21 +1,6 @@
 use libffi::middle::Arg;
 use windows_core::IUnknown;
 
-#[derive(Debug)]
-pub enum OutValue {
-    I32(i32),
-    Pointer(*mut std::ffi::c_void),
-}
-
-impl OutValue {
-    pub fn out_ptr(&self) -> *const std::ffi::c_void {
-        match self {
-            OutValue::I32(i) => std::ptr::from_ref(i).cast(),
-            OutValue::Pointer(p) => std::ptr::from_ref(p).cast(),
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum WinRTValue {
     I32(i32),
@@ -26,10 +11,10 @@ pub enum WinRTValue {
 }
 
 impl WinRTValue {
-    pub fn as_hstring(&self) -> &windows_core::HSTRING {
+    pub fn as_hstring(&self) -> Option<windows_core::HSTRING> {
         match self {
-            WinRTValue::HString(hstr) => hstr,
-            _ => panic!("Not an HSTRING value"),
+            WinRTValue::HString(hstr) => Some((*hstr).clone()),
+            _ => None,
         }
     }
 
@@ -48,6 +33,21 @@ impl WinRTValue {
             WinRTValue::HResult(hr) => arg(hr),
             WinRTValue::I32(i) => arg(i),
             WinRTValue::Pointer(p) => arg(p),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AbiValue {
+    I32(i32),
+    Pointer(*mut std::ffi::c_void),
+}
+
+impl AbiValue {
+    pub fn out_ptr(&self) -> *const std::ffi::c_void {
+        match self {
+            AbiValue::I32(i) => std::ptr::from_ref(i).cast(),
+            AbiValue::Pointer(p) => std::ptr::from_ref(p).cast(),
         }
     }
 }

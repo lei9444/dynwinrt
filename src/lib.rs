@@ -1,3 +1,4 @@
+use windows::Foundation::IStringable_Impl;
 use windows::{Data::Xml::Dom::*, core::*};
 
 mod call;
@@ -14,9 +15,80 @@ pub use crate::signature::VTableSignature;
 pub use crate::types::WinRTType;
 pub use interfaces::uri_vtable;
 
+#[implement(windows::Foundation::IStringable)]
+struct MyComObject {
+    pub data: i32,
+}
+
+impl IStringable_Impl for MyComObject_Impl {
+    fn ToString(&self) -> windows_core::Result<windows_core::HSTRING> {
+        Ok(HSTRING::from(format!(
+            "MyComObject ToString with data: {}",
+            self.data
+        )))
+    }
+}
+
+impl Drop for MyComObject {
+    fn drop(&mut self) {
+        println!("MyComObject is being dropped");
+    }
+}
+
+pub async fn http_get_string(url: &str) -> windows_core::Result<String> {
+    use windows::Foundation::Uri;
+    use windows::Web::Http::HttpClient;
+    let uri = Uri::CreateUri(&HSTRING::from(url))?;
+    let http_client = HttpClient::new()?;
+    let op = http_client.GetStringAsync(&uri)?;
+    let s = op.await?;
+    Ok(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    use windows::Foundation::{IStringable, Uri};
+
     use super::*;
+
+    #[test]
+    fn from_raw_borrow_test() -> Result<()> {
+        let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment")).unwrap();
+        let raw = uri.as_raw();
+        let uri2 = unsafe { Uri::from_raw_borrowed(&raw) }.unwrap();
+        let _ = uri2.clone();
+
+        assert_eq!(uri.SchemeName().unwrap(), uri2.SchemeName().unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn http_call() -> Result<()> {
+        futures::executor::block_on(async {
+            use std::future::IntoFuture;
+
+            let uri = Uri::CreateUri(h!("https://www.microsoft.com"))?;
+            uri.SchemeName()?; // "http"
+            uri.Host();
+            uri.Port();
+            let op = windows::Web::Http::HttpClient::new()?.GetStringAsync(&uri)?;
+            let s = op.into_future().await?;
+            // println!("Response: {}", s);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn customCom() -> Result<()> {
+        let my_obj = MyComObject { data: 42 };
+        let sta: IStringable = my_obj.into();
+        assert_eq!(
+            sta.ToString()?.to_os_string(),
+            "MyComObject ToString with data: 42"
+        );
+        Ok(())
+    }
 
     #[test]
     fn simple_windows_api_should_work() -> Result<()> {
@@ -76,16 +148,18 @@ mod tests {
 
         let get_runtime_classname = &vtable.methods[4];
         assert_eq!(
-            get_runtime_classname.call_dynamic(uri.as_raw(), &[])?[0].as_hstring(),
+            get_runtime_classname.call_dynamic(uri.as_raw(), &[])?[0]
+                .as_hstring()
+                .unwrap(),
             "Windows.Foundation.Uri"
         );
 
         let get_scheme = &vtable.methods[17];
         let scheme = get_scheme.call_dynamic(uri.as_raw(), &[])?;
-        assert_eq!(scheme[0].as_hstring(), "https");
+        assert_eq!(scheme[0].as_hstring().unwrap(), "https");
         let get_path = &vtable.methods[13];
         let path = get_path.call_dynamic(uri.as_raw(), &[])?;
-        assert_eq!(path[0].as_hstring(), "/path");
+        assert_eq!(path[0].as_hstring().unwrap(), "/path");
         let get_port = &vtable.methods[19];
         let port = get_port.call_dynamic(uri.as_raw(), &[])?;
         assert_eq!(port[0].as_i32().unwrap(), 443);

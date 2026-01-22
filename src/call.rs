@@ -1,10 +1,10 @@
 use core::ffi::c_void;
 use libffi::middle::{Arg, Cif, arg};
-use windows_core::HRESULT;
+use windows_core::{HRESULT, HSTRING, IUnknown, Interface};
 
 use crate::{
     signature::Parameter,
-    value::{OutValue, WinRTValue},
+    value::{AbiValue, WinRTValue},
 };
 
 pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_void {
@@ -15,6 +15,20 @@ pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_
         let vtable_ptr = *(obj as *const *const *mut c_void);
         *vtable_ptr.add(method_index)
     }
+}
+
+unsafe fn foo(com_this_ptr: *mut c_void, out_value: *mut *mut c_void) {}
+
+fn usage(com_this_ptr: *mut c_void) {
+    // stack allocated pointer to receive out parameter
+    let mut out_value: *mut c_void = core::ptr::null_mut();
+    // calling winrt methods
+    unsafe {
+        foo(com_this_ptr, &mut out_value);
+    }
+    // then I need to convert out_value to appropriate type
+    let outCom : IUnknown = unsafe { IUnknown::from_raw(out_value) };
+    let outHString : HSTRING = unsafe { std::mem::transmute(out_value) };
 }
 
 pub fn call_winrt_method_1<T1>(vtable_index: usize, obj: *mut c_void, x1: T1) -> HRESULT {
@@ -53,7 +67,7 @@ pub fn call_winrt_method_dynamic(
     use libffi::middle::CodePtr;
     let fptr = get_vtable_function_ptr(obj, vtable_index);
     let mut ffi_args: Vec<Arg> = Vec::with_capacity(parameters.len() + 1);
-    let mut out_values: Vec<OutValue> = Vec::with_capacity(out_count);
+    let mut out_values: Vec<AbiValue> = Vec::with_capacity(out_count);
     let mut out_ptrs: Vec<*const std::ffi::c_void> = Vec::with_capacity(out_count);
 
     ffi_args.push(arg(&obj));
