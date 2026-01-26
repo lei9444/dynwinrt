@@ -2,12 +2,14 @@ use libffi::middle::Cif;
 
 use crate::{call, types::WinRTType, value::WinRTValue};
 
+#[derive(Debug, Clone)]
 pub struct Parameter {
     pub typ: WinRTType,
     pub value_index: usize,
     pub is_out: bool,
 }
 
+#[derive(Debug, Clone)]
 pub struct MethodSignature {
     out_count: usize,
     parameters: Vec<Parameter>,
@@ -66,12 +68,14 @@ impl MethodSignature {
     }
 }
 
+#[derive(Debug)]
 pub struct MethodInfo {
     pub index: usize,
     pub parameters: Vec<Parameter>,
     pub out_count: usize,
 }
 
+#[derive(Debug)]
 pub struct Method {
     info: MethodInfo,
     cif: Cif,
@@ -94,6 +98,7 @@ impl Method {
     }
 }
 
+#[derive(Debug)]
 pub struct VTableSignature {
     pub methods: Vec<Method>,
 }

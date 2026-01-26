@@ -2,7 +2,7 @@ use windows_core::{IUnknown, Interface};
 
 use crate::value::{AbiValue, WinRTValue};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum WinRTType {
     I32,
     Object,
@@ -12,16 +12,6 @@ pub enum WinRTType {
 }
 
 impl WinRTType {
-    pub fn new_out_value(&self) -> AbiValue {
-        match self {
-            WinRTType::I32 => AbiValue::I32(0),
-            WinRTType::Object => AbiValue::Pointer(std::ptr::null_mut()),
-            WinRTType::HString => AbiValue::Pointer(std::ptr::null_mut()),
-            WinRTType::HResult => AbiValue::I32(0),
-            WinRTType::Pointer => AbiValue::Pointer(std::ptr::null_mut()),
-        }
-    }
-
     pub fn abi_type(&self) -> AbiType {
         match self {
             WinRTType::I32 | WinRTType::HResult => AbiType::I32,
@@ -47,13 +37,19 @@ impl WinRTType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum AbiType {
     I32,
     Ptr,
 }
 
 impl AbiType {
+    pub fn default_value(&self) -> AbiValue {
+        match self {
+            AbiType::I32 => AbiValue::I32(0),
+            AbiType::Ptr => AbiValue::Pointer(std::ptr::null_mut()),
+        }
+    }
     pub fn libffi_type(&self) -> libffi::middle::Type {
         match self {
             AbiType::I32 => libffi::middle::Type::i32(),

@@ -1,5 +1,6 @@
 use windows::Foundation::IStringable_Impl;
 use windows::{Data::Xml::Dom::*, core::*};
+use windows_future::IAsyncOperation;
 
 mod call;
 mod interfaces;
@@ -8,10 +9,11 @@ mod types;
 mod value;
 
 pub fn export_add(x: f64, y: &f64) -> f64 {
+    println!("export_add called with x = {}, y = {}", x, y);
     return x + y;
 }
 
-pub use crate::signature::VTableSignature;
+pub use crate::signature::{MethodSignature, VTableSignature};
 pub use crate::types::WinRTType;
 pub use interfaces::uri_vtable;
 
@@ -33,6 +35,11 @@ impl Drop for MyComObject {
     fn drop(&mut self) {
         println!("MyComObject is being dropped");
     }
+}
+
+pub async fn get_async_string(op_string: IAsyncOperation<HSTRING>) -> windows_core::Result<String> {
+    let s = op_string.await?;
+    Ok(s.to_string())
 }
 
 pub async fn http_get_string(url: &str) -> windows_core::Result<String> {
@@ -226,6 +233,33 @@ mod tests {
             println!(
                 "fn {:?} {}({}) -> {:?}",
                 method.flags(),
+                method.name(),
+                params.join(", "),
+                method.signature(&[]).return_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_winmd_read_http_client() {
+        use windows_metadata::*;
+        let index = reader::Index::read(
+            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd",
+        )
+        .unwrap();
+        let def = index.expect("Windows.Web.Http", "HttpClient");
+        // list all methods and print their signatures
+        for (i, method) in def.methods().enumerate() {
+            let params: Vec<String> = method
+                .params()
+                .enumerate()
+                .map(|(i, p)| format!("{}: {:?}", p.name(), ""))
+                .collect();
+            println!(
+                "#{}, fn {:?} {}({}) -> {:?}",
+                i,
+                // method.flags(),
+                "",
                 method.name(),
                 params.join(", "),
                 method.signature(&[]).return_type
