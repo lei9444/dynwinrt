@@ -140,7 +140,12 @@ pub async fn pick_path() -> crate::result::Result<WinRTValue> {
     let picked_file = picker
         .call_single_out(
             13,
-            &crate::WinRTType::IAsyncOperation(IAsyncOperation::<bindings::PickFileResult>::IID),
+            &crate::WinRTType::IAsyncOperation(
+                Box::new(crate::WinRTType::RuntimeClass(
+                    "Microsoft.Windows.Storage.Pickers.PickFileResult".into(),
+                    IAsyncOperation::<bindings::PickFileResult>::IID,
+                )),
+            ),
             &[],
         )
         .unwrap();

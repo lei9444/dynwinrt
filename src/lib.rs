@@ -459,7 +459,12 @@ pub async fn ocr_demo(bitmap: WinRTValue) -> WinRTValue {
     let recognizer_v = text_recongizer_factory
         .call_single_out(
             8,
-            &WinRTType::IAsyncOperation(IIds::IAsyncOperationTextRecognizer),
+            &WinRTType::IAsyncOperation(
+                Box::new(WinRTType::RuntimeClass(
+                    "Microsoft.Windows.AI.Imaging.TextRecognizer".into(),
+                    bindings::TextRecognizer::IID,
+                )),
+            ),
             &[],
         )
         .unwrap();
@@ -544,7 +549,12 @@ pub async fn windows_ai_ocr_api_call_dynamic(path: &str) -> result::Result<()> {
     let recognizer_v = text_recongizer_factory
         .call_single_out(
             8,
-            &WinRTType::IAsyncOperation(IIds::IAsyncOperationTextRecognizer),
+            &WinRTType::IAsyncOperation(
+                Box::new(WinRTType::RuntimeClass(
+                    "Microsoft.Windows.AI.Imaging.TextRecognizer".into(),
+                    bindings::TextRecognizer::IID,
+                )),
+            ),
             &[],
         )
         .map_err(|e| {
