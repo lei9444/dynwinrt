@@ -5,17 +5,12 @@ use crate::abi::{AbiType, AbiValue};
 use crate::signature;
 use crate::value::WinRTValue;
 
-// Well-known async interface IIDs/PIIDs
+// Well-known async interface IIDs/PIIDs (from windows_future crate)
 
-/// IAsyncAction — non-generic, fixed IID
-pub const IASYNC_ACTION: GUID =
-    GUID::from_u128(0x5a648006_843a_4da9_865b_9d26e5dfad7b);
+pub const IASYNC_ACTION: GUID = windows_future::IAsyncAction::IID;
 /// IAsyncActionWithProgress<P> — generic, this is the PIID
 pub const IASYNC_ACTION_WITH_PROGRESS: GUID =
     GUID::from_u128(0x1f6db258_e803_48a1_9546_eb7353398884);
-
-// Well-known parametrized interface PIIDs
-
 pub const IASYNC_OPERATION: GUID =
     GUID::from_u128(0x9fc2b0bb_e446_44e2_aa61_9cab8f636af2);
 pub const IASYNC_OPERATION_WITH_PROGRESS: GUID =
@@ -38,6 +33,25 @@ pub const IOBSERVABLE_VECTOR: GUID =
     GUID::from_u128(0x5917eb53_50b4_4a0d_b309_65862b3f1dbc);
 pub const IREFERENCE: GUID =
     GUID::from_u128(0x61c17706_2d65_11e0_9ae8_d48564015472);
+
+// Well-known completion handler PIIDs.
+// These are defined by the WinRT type system and match the values in
+// windows-future's SIGNATURE strings (e.g. "pinterface({fcdcf02c-...}; ...)").
+// windows-future does not export these PIIDs as standalone constants, so we
+// define them here for runtime handler IID computation.
+
+/// AsyncActionCompletedHandler — non-generic, this IS the final IID.
+pub const ASYNC_ACTION_COMPLETED_HANDLER: GUID =
+    windows_future::AsyncActionCompletedHandler::IID;
+/// AsyncOperationCompletedHandler<T> — PIID (concrete IID computed at runtime).
+pub const ASYNC_OPERATION_COMPLETED_HANDLER: GUID =
+    GUID::from_u128(0xfcdcf02c_e5d8_4478_915a_4d90b74b83a5);
+/// AsyncActionWithProgressCompletedHandler<P> — PIID.
+pub const ASYNC_ACTION_WITH_PROGRESS_COMPLETED_HANDLER: GUID =
+    GUID::from_u128(0x9c029f91_cc84_44fd_ac26_0a6c4e555281);
+/// AsyncOperationWithProgressCompletedHandler<T, P> — PIID.
+pub const ASYNC_OPERATION_WITH_PROGRESS_COMPLETED_HANDLER: GUID =
+    GUID::from_u128(0xe85df41d_6aa7_46e3_a8e2_f009d840c627);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WinRTType {
@@ -174,6 +188,40 @@ impl WinRTType {
         }
     }
 
+    /// Return the IID of the completion handler needed for `SetCompleted`.
+    ///
+    /// Only valid for async types. Returns `None` for non-async types.
+    pub fn completed_handler_iid(&self) -> Option<GUID> {
+        match self {
+            WinRTType::IAsyncAction => Some(ASYNC_ACTION_COMPLETED_HANDLER),
+            WinRTType::IAsyncOperation(t) => {
+                let sig = pinterface_signature(
+                    &format_guid_braced(&ASYNC_OPERATION_COMPLETED_HANDLER),
+                    &[t],
+                );
+                let buf = windows_core::imp::ConstBuffer::from_slice(sig.as_bytes());
+                Some(GUID::from_signature(buf))
+            }
+            WinRTType::IAsyncActionWithProgress(p) => {
+                let sig = pinterface_signature(
+                    &format_guid_braced(&ASYNC_ACTION_WITH_PROGRESS_COMPLETED_HANDLER),
+                    &[p],
+                );
+                let buf = windows_core::imp::ConstBuffer::from_slice(sig.as_bytes());
+                Some(GUID::from_signature(buf))
+            }
+            WinRTType::IAsyncOperationWithProgress(t, p) => {
+                let sig = pinterface_signature(
+                    &format_guid_braced(&ASYNC_OPERATION_WITH_PROGRESS_COMPLETED_HANDLER),
+                    &[t, p],
+                );
+                let buf = windows_core::imp::ConstBuffer::from_slice(sig.as_bytes());
+                Some(GUID::from_signature(buf))
+            }
+            _ => None,
+        }
+    }
+
     pub fn abi_type(&self) -> AbiType {
         match self {
             WinRTType::Bool => AbiType::Bool,
@@ -279,39 +327,23 @@ impl WinRTType {
                     if Self::is_async_def(generic_def) {
                         let raw = IUnknown::from_raw(ptr);
                         let iid = self.iid().unwrap();
-                        let rt = args.first().cloned().unwrap_or(WinRTType::Object);
-                        Self::make_async_value(raw, generic_def, iid, rt)
+                        Self::make_async_value(raw, generic_def, iid, args)
                     } else {
                         Ok(WinRTValue::Object(IUnknown::from_raw(ptr)))
                     }
                 }
 
-                WinRTType::IAsyncAction => {
+                WinRTType::IAsyncAction
+                | WinRTType::IAsyncActionWithProgress(_)
+                | WinRTType::IAsyncOperation(_)
+                | WinRTType::IAsyncOperationWithProgress(_, _) => {
                     let raw = IUnknown::from_raw(ptr);
                     let info: windows_future::IAsyncInfo = raw.cast()
                         .map_err(|e| crate::result::Error::WindowsError(e))?;
-                    Ok(WinRTValue::IAsyncAction(info, IASYNC_ACTION))
-                }
-                WinRTType::IAsyncActionWithProgress(_) => {
-                    let raw = IUnknown::from_raw(ptr);
-                    let iid = self.iid().unwrap();
-                    let info: windows_future::IAsyncInfo = raw.cast()
-                        .map_err(|e| crate::result::Error::WindowsError(e))?;
-                    Ok(WinRTValue::IAsyncActionWithProgress(info, iid))
-                }
-                WinRTType::IAsyncOperation(t) => {
-                    let raw = IUnknown::from_raw(ptr);
-                    let iid = self.iid().unwrap();
-                    let info: windows_future::IAsyncInfo = raw.cast()
-                        .map_err(|e| crate::result::Error::WindowsError(e))?;
-                    Ok(WinRTValue::IAsyncOperation(info, iid, (**t).clone()))
-                }
-                WinRTType::IAsyncOperationWithProgress(t, _) => {
-                    let raw = IUnknown::from_raw(ptr);
-                    let iid = self.iid().unwrap();
-                    let info: windows_future::IAsyncInfo = raw.cast()
-                        .map_err(|e| crate::result::Error::WindowsError(e))?;
-                    Ok(WinRTValue::IAsyncOperationWithProgress(info, iid, (**t).clone()))
+                    Ok(WinRTValue::Async(crate::value::AsyncInfo {
+                        info,
+                        async_type: self.clone(),
+                    }))
                 }
 
                 _ => Err(crate::result::Error::InvalidTypeAbiToWinRT(
@@ -353,8 +385,7 @@ impl WinRTType {
                 if Self::is_async_def(generic_def) {
                     let raw = unsafe { IUnknown::from_raw(*p) };
                     let iid = self.iid().unwrap();
-                    let rt = args.first().cloned().unwrap_or(WinRTType::Object);
-                    Self::make_async_value(raw, generic_def, iid, rt)
+                    Self::make_async_value(raw, generic_def, iid, args)
                 } else {
                     Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(*p) }))
                 }
@@ -390,12 +421,12 @@ impl WinRTType {
     }
 
     /// Build a `WinRTValue::Async` from a raw interface pointer.
-    /// `result_type` is the WinRTType that GetResults returns.
+    /// `args` are the type parameters of the generic async type.
     fn make_async_value(
         raw: IUnknown,
         generic_def: &WinRTType,
         iid: GUID,
-        result_type: WinRTType,
+        args: &[WinRTType],
     ) -> crate::result::Result<WinRTValue> {
         let piid = match generic_def {
             WinRTType::Generic { piid, .. } => *piid,
@@ -408,14 +439,26 @@ impl WinRTType {
         let info: windows_future::IAsyncInfo = raw.cast()
             .map_err(|e| crate::result::Error::WindowsError(e))?;
 
-        if piid == IASYNC_ACTION {
-            Ok(WinRTValue::IAsyncAction(info, iid))
+        let async_type = if piid == IASYNC_ACTION {
+            WinRTType::IAsyncAction
         } else if piid == IASYNC_OPERATION {
-            Ok(WinRTValue::IAsyncOperation(info, iid, result_type))
+            let t = args.first().cloned().unwrap_or(WinRTType::Object);
+            WinRTType::IAsyncOperation(Box::new(t))
         } else if piid == IASYNC_ACTION_WITH_PROGRESS {
-            Ok(WinRTValue::IAsyncActionWithProgress(info, iid))
+            let p = args.first().cloned().unwrap_or(WinRTType::Object);
+            WinRTType::IAsyncActionWithProgress(Box::new(p))
         } else if piid == IASYNC_OPERATION_WITH_PROGRESS {
-            Ok(WinRTValue::IAsyncOperationWithProgress(info, iid, result_type))
+            let t = args.first().cloned().unwrap_or(WinRTType::Object);
+            let p = args.get(1).cloned().unwrap_or(WinRTType::Object);
+            WinRTType::IAsyncOperationWithProgress(Box::new(t), Box::new(p))
+        } else {
+            return Err(crate::result::Error::WindowsError(
+                windows_core::Error::from_hresult(windows_core::HRESULT(0x80004002u32 as i32)),
+            ));
+        };
+
+        if true {
+            Ok(WinRTValue::Async(crate::value::AsyncInfo { info, async_type }))
         } else {
             Err(crate::result::Error::WindowsError(
                 windows_core::Error::from_hresult(windows_core::HRESULT(0x80004002u32 as i32)),
@@ -438,6 +481,14 @@ fn pinterface_signature(piid_sig: &str, args: &[&WinRTType]) -> String {
     }
     s.push(')');
     s
+}
+
+/// Compute the IID of a parameterized completion handler from its PIID and type args.
+fn compute_parameterized_handler_iid(handler_piid: &GUID, args: &[WinRTType]) -> GUID {
+    let refs: Vec<&WinRTType> = args.iter().collect();
+    let sig = pinterface_signature(&format_guid_braced(handler_piid), &refs);
+    let buf = windows_core::imp::ConstBuffer::from_slice(sig.as_bytes());
+    GUID::from_signature(buf)
 }
 
 #[cfg(test)]

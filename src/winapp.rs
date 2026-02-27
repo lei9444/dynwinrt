@@ -150,7 +150,7 @@ pub async fn pick_path() -> crate::result::Result<WinRTValue> {
         )
         .unwrap();
 
-    let res = (&picked_file).await?;
+    let res = picked_file.await?;
     println!("Picked file result: {:?}", res);
     let path = res
         .call_single_out(6, &crate::WinRTType::HString, &[])
@@ -301,12 +301,17 @@ mod tests {
         // let asv: IAsyncOperation<bindings::PickFileResult> = rv2.cast().unwrap();
         // let rr = asv.join()?;
         let rva: IAsyncInfo = rv2.cast().unwrap();
-        let iid = IAsyncOperation::<bindings::PickFileResult>::IID;
-        let op = crate::dasync::DynWinRTAsyncOperationIUnknown(rva, iid);
-        let res = op.await?;
+        let async_val = crate::value::WinRTValue::Async(crate::value::AsyncInfo {
+            info: rva,
+            async_type: crate::WinRTType::IAsyncOperation(Box::new(crate::WinRTType::Object)),
+        });
+        let res = async_val.await.map_err(|e| match e {
+            crate::result::Error::WindowsError(we) => we,
+            other => windows_core::Error::new(windows_core::HRESULT(-1), &other.message()),
+        })?;
         println!("Picked file result: {:?}", res);
         let pfrvtbl = interfaces::PickFileResult();
-        let path_results = pfrvtbl.methods[6].call_dynamic(res.as_raw(), &[])?;
+        let path_results = pfrvtbl.methods[6].call_dynamic(res.as_object().unwrap().as_raw(), &[])?;
         let path = path_results[0].as_hstring().unwrap();
         // let mut ptr = std::ptr::null_mut();
         // unsafe { res.query(&bindings::PickFileResult::IID, &mut ptr) }.unwrap();

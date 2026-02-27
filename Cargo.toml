@@ -28,6 +28,7 @@ features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Storage_Packaging_Appx",
     "Web_Http",
+    "System_Threading",
     "Win32_System_Com",
     "Graphics_Imaging"
 ]

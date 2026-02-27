@@ -469,7 +469,7 @@ pub async fn ocr_demo(bitmap: WinRTValue) -> WinRTValue {
         )
         .unwrap();
     println!("TextRecognizer created successfully");
-    let recognizer = (&(recognizer_v)).await.unwrap();
+    let recognizer = recognizer_v.await.unwrap();
     println!("SoftwareBitmap wrapped successfully");
     // let bitmap_v: SoftwareBitmap = bitmap.as_object().unwrap().cast().unwrap();
     let bitmapt = bitmap.cast(&IIds::ISoftwareBitmap).unwrap();
@@ -563,7 +563,7 @@ pub async fn windows_ai_ocr_api_call_dynamic(path: &str) -> result::Result<()> {
         })
         .unwrap();
     println!("TextRecognizer created successfully");
-    let recognizer = (&(recognizer_v)).await?;
+    let recognizer = recognizer_v.await?;
 
     // let recognizer = recognizer_o.as_object().unwrap();
     // .cast::<TextRecognizer>()?;

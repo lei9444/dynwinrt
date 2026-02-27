@@ -22,6 +22,30 @@ impl Clone for ArrayOfIUnknownData {
     }
 }
 
+/// Metadata for a dynamic WinRT async operation.
+#[derive(Debug, Clone)]
+pub struct AsyncInfo {
+    pub info: IAsyncInfo,
+    pub async_type: WinRTType,
+}
+
+impl AsyncInfo {
+    pub fn iid(&self) -> GUID {
+        self.async_type.iid().expect("async type must have IID")
+    }
+
+    pub fn handler_iid(&self) -> GUID {
+        self.async_type.completed_handler_iid().expect("async type must have handler IID")
+    }
+
+    pub fn result_type(&self) -> Option<&WinRTType> {
+        match &self.async_type {
+            WinRTType::IAsyncOperation(t) | WinRTType::IAsyncOperationWithProgress(t, _) => Some(t),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum WinRTValue {
     Bool(bool),
@@ -39,14 +63,7 @@ pub enum WinRTValue {
     HString(windows_core::HSTRING),
     HResult(windows_core::HRESULT),
     OutValue(*mut std::ffi::c_void, WinRTType),
-    /// IAsyncAction — GetResults at vtable index 8, no return value.
-    IAsyncAction(IAsyncInfo, GUID),
-    /// IAsyncActionWithProgress — GetResults at vtable index 10, no return value.
-    IAsyncActionWithProgress(IAsyncInfo, GUID),
-    /// IAsyncOperation<T> — GetResults at vtable index 8, returns result_type.
-    IAsyncOperation(IAsyncInfo, GUID, WinRTType),
-    /// IAsyncOperationWithProgress<T,P> — GetResults at vtable index 10, returns result_type.
-    IAsyncOperationWithProgress(IAsyncInfo, GUID, WinRTType),
+    Async(AsyncInfo),
     ArrayOfIUnknown(ArrayOfIUnknownData),
 }
 unsafe impl Send for WinRTValue {}
@@ -86,10 +103,7 @@ impl WinRTValue {
     pub fn as_object(&self) -> Option<IUnknown> {
         match self {
             WinRTValue::Object(obj) => Some(obj.clone()),
-            WinRTValue::IAsyncAction(info, _)
-            | WinRTValue::IAsyncActionWithProgress(info, _)
-            | WinRTValue::IAsyncOperation(info, _, _)
-            | WinRTValue::IAsyncOperationWithProgress(info, _, _) => Some(info.cast().ok()?),
+            WinRTValue::Async(a) => Some(a.info.cast().ok()?),
             _ => None,
         }
     }
@@ -178,10 +192,7 @@ impl WinRTValue {
             WinRTValue::HString(_) => crate::WinRTType::HString,
             WinRTValue::HResult(_) => crate::WinRTType::HResult,
             WinRTValue::OutValue(_, typ) => crate::WinRTType::OutValue(Box::new(typ.clone())),
-            WinRTValue::IAsyncAction(_, _)
-            | WinRTValue::IAsyncActionWithProgress(_, _)
-            | WinRTValue::IAsyncOperation(_, _, _)
-            | WinRTValue::IAsyncOperationWithProgress(_, _, _) => crate::WinRTType::Object,
+            WinRTValue::Async(_) => crate::WinRTType::Object,
             WinRTValue::ArrayOfIUnknown(_) => crate::WinRTType::ArrayOfIUnknown,
         }
     }
@@ -204,10 +215,7 @@ impl WinRTValue {
             WinRTValue::HResult(hr) => hr as *mut windows_core::HRESULT as _,
             WinRTValue::OutValue(ptr, _) => *ptr,
             WinRTValue::ArrayOfIUnknown(data) => data.0.as_ptr() as *mut std::ffi::c_void,
-            WinRTValue::IAsyncAction(_, _)
-            | WinRTValue::IAsyncActionWithProgress(_, _)
-            | WinRTValue::IAsyncOperation(_, _, _)
-            | WinRTValue::IAsyncOperationWithProgress(_, _, _) => panic!("Cannot get out_ptr for async value"),
+            WinRTValue::Async(_) => panic!("Cannot get out_ptr for async value"),
         }
     }
 
@@ -229,10 +237,7 @@ impl WinRTValue {
             WinRTValue::HString(hstr) => arg(hstr),
             WinRTValue::HResult(hr) => arg(hr),
             WinRTValue::OutValue(p, _) => arg(p),
-            WinRTValue::IAsyncAction(_, _)
-            | WinRTValue::IAsyncActionWithProgress(_, _)
-            | WinRTValue::IAsyncOperation(_, _, _)
-            | WinRTValue::IAsyncOperationWithProgress(_, _, _) => panic!("Cannot pass async value as libffi arg"),
+            WinRTValue::Async(_) => panic!("Cannot pass async value as libffi arg"),
             WinRTValue::ArrayOfIUnknown(data) => arg(&data.0),
         }
     }
