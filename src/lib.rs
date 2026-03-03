@@ -13,8 +13,11 @@ mod types;
 mod value;
 mod winapp;
 
+mod array;
 mod bindings;
 mod dasync;
+mod meta;
+pub mod type_table;
 
 pub struct IIds;
 impl IIds {
@@ -28,6 +31,7 @@ impl IIds {
         IAsyncOperation::<bindings::TextRecognizer>::IID;
     pub const IAsyncOperationRecognizedText: windows_core::GUID =
         IAsyncOperation::<bindings::RecognizedText>::IID;
+    pub const TextRecognizer: windows_core::GUID = bindings::TextRecognizer::IID;
     pub const RecognizedText: windows_core::GUID = bindings::RecognizedText::IID;
 }
 
@@ -46,6 +50,7 @@ pub use crate::value::WinRTValue;
 use crate::winapp::pick_path;
 pub use crate::winapp::test_pick_open_picker_full_dynamic;
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
+pub use crate::type_table::TypeTable;
 pub use interfaces::uri_vtable;
 
 #[implement(windows::Foundation::IStringable)]
@@ -313,6 +318,217 @@ mod tests {
                 method.signature(&[]).return_type
             );
         }
+    }
+
+    #[test]
+    fn test_struct_in_param_geopoint_create() -> Result<()> {
+        use windows::Devices::Geolocation::Geopoint;
+        use windows::Win32::System::WinRT::{
+            IActivationFactory, RO_INIT_MULTITHREADED, RoGetActivationFactory, RoInitialize,
+        };
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // 1. Define BasicGeoposition { Latitude: f64, Longitude: f64, Altitude: f64 }
+        let reg = type_table::TypeRegistry::new();
+        let f64_h = reg.primitive(type_table::PrimitiveType::F64);
+        let geo_type = reg.define_struct(&[f64_h.clone(), f64_h.clone(), f64_h]);
+
+        // 2. Create and populate struct value
+        let mut geo_val = geo_type.default_value();
+        geo_val.set_field(0, 47.643f64);
+        geo_val.set_field(1, -122.131f64);
+        geo_val.set_field(2, 100.0f64);
+
+        // 3. Get IGeopointFactory
+        let afactory = unsafe {
+            RoGetActivationFactory::<IActivationFactory>(
+                h!("Windows.Devices.Geolocation.Geopoint"),
+            )
+        }?;
+        let geopoint_factory =
+            afactory.cast::<windows::Devices::Geolocation::IGeopointFactory>()?;
+
+        // 4. Define IGeopointFactory with Create method at vtable index 6
+        // ABI: fn(this, BasicGeoposition, *out) -> HRESULT
+        let mut factory_sig = InterfaceSignature::define_from_iinspectable(
+            "IGeopointFactory",
+            windows::Devices::Geolocation::IGeopointFactory::IID,
+        );
+        factory_sig.add_method(
+            MethodSignature::new()
+                .add(WinRTType::Struct(geo_type.clone()))
+                .add_out(WinRTType::Object),
+        );
+
+        // 5. Call Create via MethodSignature
+        let create_method = &factory_sig.methods[6];
+        let results = create_method.call_dynamic(
+            geopoint_factory.as_raw(),
+            &[WinRTValue::Struct(geo_val)],
+        )?;
+
+        // 6. Verify
+        let geopoint_obj = results[0].as_object().unwrap();
+        let geopoint: Geopoint = geopoint_obj.cast()?;
+        let pos = geopoint.Position()?;
+        assert!((pos.Latitude - 47.643).abs() < 1e-6);
+        assert!((pos.Longitude - (-122.131)).abs() < 1e-6);
+        assert!((pos.Altitude - 100.0).abs() < 1e-6);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_out_param_geopoint_position() -> Result<()> {
+        use windows::Devices::Geolocation::{BasicGeoposition, Geopoint, IGeopoint};
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // 1. Create a Geopoint using static projection (known-good)
+        let position = BasicGeoposition {
+            Latitude: 47.643,
+            Longitude: -122.131,
+            Altitude: 100.0,
+        };
+        let geopoint = Geopoint::Create(position)?;
+
+        // 2. Define BasicGeoposition struct type
+        let reg = type_table::TypeRegistry::new();
+        let f64_h = reg.primitive(type_table::PrimitiveType::F64);
+        let geo_type = reg.define_struct(&[f64_h.clone(), f64_h.clone(), f64_h]);
+
+        // 3. Define IGeopoint with get_Position at vtable index 6
+        // ABI: fn(this, *out_BasicGeoposition) -> HRESULT
+        let mut igeopoint_sig = InterfaceSignature::define_from_iinspectable(
+            "IGeopoint",
+            IGeopoint::IID,
+        );
+        igeopoint_sig.add_method(
+            MethodSignature::new()
+                .add_out(WinRTType::Struct(geo_type)),
+        );
+
+        // 4. Call get_Position via MethodSignature
+        let igeopoint: IGeopoint = geopoint.cast()?;
+        let get_position = &igeopoint_sig.methods[6];
+        let results = get_position.call_dynamic(igeopoint.as_raw(), &[])?;
+
+        // 5. Verify
+        let data = results[0].as_struct().expect("Expected WinRTValue::Struct");
+        let lat: f64 = data.get_field(0);
+        let lon: f64 = data.get_field(1);
+        let alt: f64 = data.get_field(2);
+        assert!((lat - 47.643).abs() < 1e-6);
+        assert!((lon - (-122.131)).abs() < 1e-6);
+        assert!((alt - 100.0).abs() < 1e-6);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pass_array_create_int32() -> Result<()> {
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // IPropertyValueStatics: {629BDBC8-D932-4FF4-96B9-8D96C5C1E858}
+        let statics_iid = windows_core::GUID::from_u128(0x629BDBC8_D932_4FF4_96B9_8D96C5C1E858);
+
+        // Get factory and QI to IPropertyValueStatics
+        let factory = WinRTValue::from_activation_factory(h!("Windows.Foundation.PropertyValue")).unwrap();
+        let statics = factory.cast(&statics_iid).unwrap();
+
+        // Build IPropertyValueStatics interface signature
+        // vtable[6..28] = scalar Create methods (23 methods)
+        // vtable[29] = CreateInt32Array(UINT32 length, INT32* data, IInspectable** result)
+        let mut iface = InterfaceSignature::define_from_iinspectable(
+            "IPropertyValueStatics",
+            statics_iid,
+        );
+        for _ in 0..23 {
+            iface.add_method(MethodSignature::new()); // placeholders for vtable[6..28]
+        }
+        iface.add_method(
+            MethodSignature::new()
+                .add_array(WinRTType::I32)
+                .add_out(WinRTType::Object),
+        );
+
+        // Create array data
+        let array_arg = WinRTValue::Array(value::ArrayData::from_values(
+            WinRTType::I32,
+            vec![WinRTValue::I32(10), WinRTValue::I32(20), WinRTValue::I32(30)],
+        ));
+
+        // Call CreateInt32Array at vtable index 29
+        let results = iface.methods[29].call_dynamic(
+            statics.as_object().unwrap().as_raw(),
+            &[array_arg],
+        )?;
+
+        assert_eq!(results.len(), 1);
+        let result_obj = results[0].as_object().unwrap();
+
+        // Verify by reading back via static projection
+        let inspectable: windows_core::IInspectable = result_obj.cast()?;
+        let pv: windows::Foundation::IPropertyValue = inspectable.cast()?;
+        let mut readback = windows::core::Array::<i32>::new();
+        pv.GetInt32Array(&mut readback)?;
+        assert_eq!(&readback[..], &[10, 20, 30]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_receive_array_get_int32() -> Result<()> {
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // Create a PropertyValue with known data via static projection
+        let test_data = vec![100i32, 200, 300, 400, 500];
+        let prop = windows::Foundation::PropertyValue::CreateInt32Array(&test_data)?;
+
+        // IPropertyValue: {4BD682DD-7554-40E9-9A9B-82654EDE7E62}
+        let ipv_iid = windows_core::GUID::from_u128(0x4BD682DD_7554_40E9_9A9B_82654EDE7E62);
+
+        // QI to IPropertyValue
+        let prop_unk: IUnknown = prop.cast()?;
+        let mut ipv_ptr = std::ptr::null_mut();
+        unsafe { prop_unk.query(&ipv_iid, &mut ipv_ptr) }.ok()?;
+        let ipv = unsafe { IUnknown::from_raw(ipv_ptr) };
+
+        // Build IPropertyValue interface signature
+        // vtable[6..25] = scalar Get methods (20 methods)
+        // vtable[26..28] = GetUInt8Array, GetInt16Array, GetUInt16Array
+        // vtable[29] = GetInt32Array(UINT32* length, INT32** data)
+        let mut iface = InterfaceSignature::define_from_iinspectable(
+            "IPropertyValue",
+            ipv_iid,
+        );
+        for _ in 0..23 {
+            iface.add_method(MethodSignature::new()); // placeholders for vtable[6..28]
+        }
+        iface.add_method(
+            MethodSignature::new()
+                .add_out_array(WinRTType::I32),
+        );
+
+        // Call GetInt32Array at vtable index 29
+        let results = iface.methods[29].call_dynamic(ipv.as_raw(), &[])?;
+
+        // Verify
+        let array = results[0].as_array().expect("Expected WinRTValue::Array");
+        assert_eq!(array.len(), 5);
+        assert_eq!(array.elements[0].as_i32().unwrap(), 100);
+        assert_eq!(array.elements[1].as_i32().unwrap(), 200);
+        assert_eq!(array.elements[2].as_i32().unwrap(), 300);
+        assert_eq!(array.elements[3].as_i32().unwrap(), 400);
+        assert_eq!(array.elements[4].as_i32().unwrap(), 500);
+
+        Ok(())
     }
 }
 

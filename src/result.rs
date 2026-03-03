@@ -7,6 +7,9 @@ pub enum Error {
     InvalidNestedOutType(WinRTType),
     InvalidTypeAbiToWinRT(WinRTType, AbiType),
     WindowsError(windows_core::Error),
+    TypeNotFound(String),
+    NotAnInterface(String),
+    MethodNotFound(String, String),
 }
 
 impl Error {
@@ -32,6 +35,11 @@ impl Error {
                 )
             }
             Error::WindowsError(err) => format!("Windows error: {}", err),
+            Error::TypeNotFound(name) => format!("Type not found: {}", name),
+            Error::NotAnInterface(name) => format!("Not an interface: {}", name),
+            Error::MethodNotFound(iface, method) => {
+                format!("Method '{}' not found on interface '{}'", method, iface)
+            }
         }
     }
 }

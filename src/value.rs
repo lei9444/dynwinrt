@@ -12,6 +12,8 @@ use crate::{
 #[derive(Debug)]
 pub struct ArrayOfIUnknownData(pub windows::core::Array<IUnknown>);
 
+pub use crate::array::ArrayData;
+
 impl Clone for ArrayOfIUnknownData {
     fn clone(&self) -> Self {
         let mut arr = windows::core::Array::<IUnknown>::with_len(self.0.len());
@@ -62,9 +64,12 @@ pub enum WinRTValue {
     Object(IUnknown),
     HString(windows_core::HSTRING),
     HResult(windows_core::HRESULT),
+    Guid(windows_core::GUID),
     OutValue(*mut std::ffi::c_void, WinRTType),
     Async(AsyncInfo),
     ArrayOfIUnknown(ArrayOfIUnknownData),
+    Struct(crate::type_table::ValueTypeData),
+    Array(ArrayData),
 }
 unsafe impl Send for WinRTValue {}
 unsafe impl Sync for WinRTValue {}
@@ -150,6 +155,48 @@ impl WinRTValue {
             _ => Err(result::Error::ExpectObjectTypeError(self.get_type())),
         }
     }
+    /// General-purpose call: dispatches by argument count.
+    /// 0-1 args use fast transmute path; 2+ args use libffi via MethodSignature.
+    pub fn call_general(
+        &self,
+        method_index: usize,
+        out_type: &WinRTType,
+        in_types: &[WinRTType],
+        args: &[WinRTValue],
+    ) -> result::Result<WinRTValue> {
+        assert_eq!(
+            in_types.len(),
+            args.len(),
+            "in_types and args must have the same length"
+        );
+        match self {
+            WinRTValue::Object(obj) => {
+                // Fast path: 0 or 1 in-params, non-array/struct types only
+                let has_complex_type = out_type.is_array()
+                    || out_type.is_fill_array()
+                    || matches!(out_type, WinRTType::Struct(_))
+                    || in_types.iter().any(|t| t.is_array() || matches!(t, WinRTType::Struct(_)));
+                if args.len() <= 1 && !has_complex_type {
+                    return self.call_single_out(method_index, out_type, args);
+                }
+                // Slow path: build MethodSignature dynamically, call via libffi
+                let mut sig = crate::MethodSignature::new();
+                for t in in_types {
+                    sig = sig.add(t.clone());
+                }
+                sig = sig.add_out(out_type.clone());
+                let method = sig.build(method_index);
+                let results = method.call_dynamic(obj.as_raw(), args)?;
+                results.into_iter().next().ok_or_else(|| {
+                    result::Error::WindowsError(windows_core::Error::from_hresult(
+                        windows_core::HRESULT(0x80004005u32 as i32),
+                    ))
+                })
+            }
+            _ => Err(result::Error::ExpectObjectTypeError(self.get_type())),
+        }
+    }
+
     pub fn call_single_out_2(
         &self,
         method_index: usize,
@@ -191,9 +238,12 @@ impl WinRTValue {
             WinRTValue::Object(_) => crate::WinRTType::Object,
             WinRTValue::HString(_) => crate::WinRTType::HString,
             WinRTValue::HResult(_) => crate::WinRTType::HResult,
+            WinRTValue::Guid(_) => crate::WinRTType::Guid,
             WinRTValue::OutValue(_, typ) => crate::WinRTType::OutValue(Box::new(typ.clone())),
             WinRTValue::Async(_) => crate::WinRTType::Object,
             WinRTValue::ArrayOfIUnknown(_) => crate::WinRTType::ArrayOfIUnknown,
+            WinRTValue::Struct(data) => crate::WinRTType::Struct(data.type_handle().clone()),
+            WinRTValue::Array(data) => crate::WinRTType::Array(Box::new(data.element_type.clone())),
         }
     }
 
@@ -213,9 +263,12 @@ impl WinRTValue {
             WinRTValue::HString(s) => s as *mut windows_core::HSTRING as _,
             WinRTValue::Object(o) => o as *mut IUnknown as _,
             WinRTValue::HResult(hr) => hr as *mut windows_core::HRESULT as _,
+            WinRTValue::Guid(g) => g as *mut windows_core::GUID as _,
             WinRTValue::OutValue(ptr, _) => *ptr,
             WinRTValue::ArrayOfIUnknown(data) => data.0.as_ptr() as *mut std::ffi::c_void,
             WinRTValue::Async(_) => panic!("Cannot get out_ptr for async value"),
+            WinRTValue::Struct(data) => data.as_mut_ptr() as *mut std::ffi::c_void,
+            WinRTValue::Array(_) => panic!("Cannot get out_ptr for Array; arrays expand to two ABI parameters"),
         }
     }
 
@@ -236,9 +289,33 @@ impl WinRTValue {
             WinRTValue::Object(p) => arg(p),
             WinRTValue::HString(hstr) => arg(hstr),
             WinRTValue::HResult(hr) => arg(hr),
+            WinRTValue::Guid(g) => arg(g),
             WinRTValue::OutValue(p, _) => arg(p),
             WinRTValue::Async(_) => panic!("Cannot pass async value as libffi arg"),
             WinRTValue::ArrayOfIUnknown(data) => arg(&data.0),
+            WinRTValue::Struct(data) => unsafe { arg(&*data.as_ptr()) },
+            WinRTValue::Array(_) => panic!("Cannot pass Array as single libffi arg; arrays expand to two args"),
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&ArrayData> {
+        match self {
+            WinRTValue::Array(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn as_struct(&self) -> Option<&crate::type_table::ValueTypeData> {
+        match self {
+            WinRTValue::Struct(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    pub fn as_struct_mut(&mut self) -> Option<&mut crate::type_table::ValueTypeData> {
+        match self {
+            WinRTValue::Struct(data) => Some(data),
+            _ => None,
         }
     }
 }
