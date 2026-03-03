@@ -124,12 +124,19 @@ pub struct WinRTAsyncFuture {
     waker: Option<Arc<Mutex<Waker>>>,
 }
 
+// WinRT async operations are agile objects and safe to send across threads.
+unsafe impl Send for WinRTAsyncFuture {}
+
 impl WinRTAsyncFuture {
     fn from_value(value: WinRTValue) -> Self {
         match value {
             WinRTValue::Async(a) => Self { async_info: a, waker: None },
             _ => panic!("WinRTAsyncFuture::from_value called with non-async WinRTValue"),
         }
+    }
+
+    fn from_async_info(info: AsyncInfo) -> Self {
+        Self { async_info: info, waker: None }
     }
 
     /// QI from IAsyncInfo to the concrete async interface.
@@ -258,6 +265,18 @@ impl IntoFuture for WinRTValue {
 
     fn into_future(self) -> WinRTAsyncFuture {
         WinRTAsyncFuture::from_value(self)
+    }
+}
+
+impl IntoFuture for &WinRTValue {
+    type Output = Result<WinRTValue>;
+    type IntoFuture = WinRTAsyncFuture;
+
+    fn into_future(self) -> WinRTAsyncFuture {
+        match self {
+            WinRTValue::Async(a) => WinRTAsyncFuture::from_async_info(a.clone()),
+            _ => panic!("IntoFuture for &WinRTValue called with non-async WinRTValue"),
+        }
     }
 }
 

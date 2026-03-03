@@ -97,6 +97,23 @@ pub enum WinRTType {
     HResult,
     OutValue(Box<WinRTType>),
     ArrayOfIUnknown,
+
+    /// A WinRT value type (struct), described by a TypeHandle from the registry.
+    /// Passed by value at the ABI level for in-parameters, by pointer for out-parameters.
+    Struct(crate::type_table::TypeHandle),
+
+    /// A WinRT array of elements of the given type.
+    /// At the ABI level, arrays expand into TWO parameters:
+    ///   - PassArray (in):  UINT32 length, T* data
+    ///   - ReceiveArray (out): UINT32* out_length, T** out_data
+    Array(Box<WinRTType>),
+
+    /// A WinRT FillArray parameter (caller-allocated buffer, callee fills).
+    /// At the ABI level, expands into TWO parameters:
+    ///   UINT32 capacity, T* items
+    /// Used as an out-parameter, returns actual count as a separate out param.
+    /// The capacity is provided by the caller via the ArrayData length.
+    FillArray(Box<WinRTType>),
 }
 
 impl WinRTType {
@@ -154,7 +171,8 @@ impl WinRTType {
             WinRTType::IAsyncOperationWithProgress(t, p) => {
                 pinterface_signature(&format_guid_braced(&IASYNC_OPERATION_WITH_PROGRESS), &[t, p])
             }
-            WinRTType::Object | WinRTType::HResult | WinRTType::OutValue(_) | WinRTType::ArrayOfIUnknown => {
+            WinRTType::Object | WinRTType::HResult | WinRTType::OutValue(_) | WinRTType::ArrayOfIUnknown
+            | WinRTType::Struct(_) | WinRTType::Array(_) | WinRTType::FillArray(_) => {
                 panic!("Type {:?} has no WinRT type signature", self)
             }
         }
@@ -246,6 +264,28 @@ impl WinRTType {
             WinRTType::Generic { piid, .. } => {
                 panic!("Cannot get ABI type for uninstantiated Generic({:?})", piid)
             }
+
+            WinRTType::Struct(_) => {
+                panic!("Struct types do not have a simple AbiType; use WinRTType::libffi_type() instead")
+            }
+
+            WinRTType::Array(_) | WinRTType::FillArray(_) => {
+                panic!("Array types expand to multiple ABI parameters; cannot map to single AbiType")
+            }
+        }
+    }
+
+    /// Return the libffi type for this WinRT type.
+    /// For struct types, returns a struct type (not a pointer).
+    /// For all other types, delegates to `abi_type().libffi_type()`.
+    /// Panics for Array/FillArray types (they expand to multiple libffi types).
+    pub fn libffi_type(&self) -> libffi::middle::Type {
+        match self {
+            WinRTType::Struct(handle) => handle.libffi_type(),
+            WinRTType::Array(_) | WinRTType::FillArray(_) => {
+                panic!("Array types expand to multiple libffi types; use array-aware expansion in build()")
+            }
+            _ => self.abi_type().libffi_type(),
         }
     }
 
@@ -269,7 +309,7 @@ impl WinRTType {
 
             WinRTType::HString => WinRTValue::HString(windows_core::HSTRING::new()),
 
-            WinRTType::Guid => panic!("Cannot create default value for Guid (16-byte struct not yet supported)"),
+            WinRTType::Guid => WinRTValue::Guid(windows_core::GUID::zeroed()),
 
             WinRTType::HResult => WinRTValue::HResult(windows_core::HRESULT(0)),
 
@@ -293,6 +333,42 @@ impl WinRTType {
             WinRTType::ArrayOfIUnknown => {
                 WinRTValue::ArrayOfIUnknown(crate::value::ArrayOfIUnknownData(windows::core::Array::new()))
             }
+
+            WinRTType::Struct(handle) => WinRTValue::Struct(handle.default_value()),
+
+            WinRTType::Array(element_type) | WinRTType::FillArray(element_type) => {
+                WinRTValue::Array(crate::value::ArrayData::empty((**element_type).clone()))
+            }
+        }
+    }
+
+    pub fn is_array(&self) -> bool {
+        matches!(self, WinRTType::Array(_))
+    }
+
+    pub fn is_fill_array(&self) -> bool {
+        matches!(self, WinRTType::FillArray(_))
+    }
+
+    pub fn array_element_type(&self) -> &WinRTType {
+        match self {
+            WinRTType::Array(elem) | WinRTType::FillArray(elem) => elem,
+            _ => panic!("array_element_type called on non-array type {:?}", self),
+        }
+    }
+
+    /// Return the size in bytes of one element of this type when stored in a flat array.
+    pub fn element_size(&self) -> usize {
+        match self {
+            WinRTType::Bool | WinRTType::U8 | WinRTType::I8 => 1,
+            WinRTType::I16 | WinRTType::U16 | WinRTType::Char16 => 2,
+            WinRTType::I32 | WinRTType::U32 | WinRTType::F32 | WinRTType::HResult => 4,
+            WinRTType::I64 | WinRTType::U64 | WinRTType::F64 => 8,
+            WinRTType::Object | WinRTType::HString | WinRTType::Interface(_)
+            | WinRTType::Delegate(_) | WinRTType::RuntimeClass(_, _) => std::mem::size_of::<*mut std::ffi::c_void>(),
+            WinRTType::Guid => 16,
+            WinRTType::Struct(handle) => handle.size_of(),
+            _ => panic!("element_size not supported for {:?}", self),
         }
     }
 

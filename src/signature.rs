@@ -47,17 +47,49 @@ impl MethodSignature {
         self
     }
 
+    /// Add an in-parameter of array type. At the ABI level this expands to
+    /// UINT32 length + T* data.
+    pub fn add_array(self, element_type: WinRTType) -> Self {
+        self.add(WinRTType::Array(Box::new(element_type)))
+    }
+
+    /// Add an out-parameter of array type. At the ABI level this expands to
+    /// UINT32* out_length + T** out_data (ReceiveArray pattern).
+    pub fn add_out_array(self, element_type: WinRTType) -> Self {
+        self.add_out(WinRTType::Array(Box::new(element_type)))
+    }
+
+    /// Add a FillArray out-parameter. Caller allocates the buffer, callee fills it.
+    /// ABI: UINT32 capacity, T* items (expands to two ABI params).
+    /// The actual count of filled items is typically returned as a separate U32 out-param.
+    pub fn add_fill_array(self, element_type: WinRTType) -> Self {
+        self.add_out(WinRTType::FillArray(Box::new(element_type)))
+    }
+
     pub fn build(self, index: usize) -> Method {
         use libffi::middle::Type;
         let mut types: Vec<Type> = Vec::with_capacity(self.parameters.len() + 1);
         types.push(Type::pointer()); // com object's this pointer
         for param in &self.parameters {
-            types.push(if param.is_out {
-                // out parameters are always pointers
-                Type::pointer()
+            if param.typ.is_array() {
+                if param.is_out {
+                    // ReceiveArray: UINT32* out_length, T** out_data
+                    types.push(Type::pointer()); // pointer to u32
+                    types.push(Type::pointer()); // pointer to pointer
+                } else {
+                    // PassArray: UINT32 length, T* data
+                    types.push(Type::u32());     // length
+                    types.push(Type::pointer()); // data pointer
+                }
+            } else if param.typ.is_fill_array() {
+                // FillArray: UINT32 capacity, T* items (caller-allocated)
+                types.push(Type::u32());     // capacity
+                types.push(Type::pointer()); // pointer to caller-allocated buffer
+            } else if param.is_out {
+                types.push(Type::pointer());
             } else {
-                param.typ.abi_type().libffi_type()
-            })
+                types.push(param.typ.libffi_type());
+            }
         }
         let cif = Cif::new(types.into_iter(), self.return_type.abi_type().libffi_type());
         Method {
