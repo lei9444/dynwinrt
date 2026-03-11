@@ -8,7 +8,7 @@ use windows_core::{GUID, HRESULT, IUnknown};
 use windows_future::{AsyncActionCompletedHandler, AsyncStatus};
 
 use crate::result::{Error, Result};
-use crate::types::WinRTType;
+use crate::metadata_table::{TypeKind, IASYNC_ACTION};
 use crate::value::WinRTValue;
 
 // ---------------------------------------------------------------------------
@@ -151,9 +151,10 @@ impl WinRTAsyncFuture {
 
     /// Vtable indices for SetCompleted and GetResults.
     fn vtable_indices(&self) -> (usize, usize) {
-        match &self.async_info.async_type {
-            WinRTType::IAsyncAction | WinRTType::IAsyncOperation(_) => (6, 8),
-            WinRTType::IAsyncActionWithProgress(_) | WinRTType::IAsyncOperationWithProgress(_, _) => (8, 10),
+        use crate::metadata_table::TypeKind;
+        match self.async_info.async_type.kind() {
+            TypeKind::IAsyncAction | TypeKind::IAsyncOperation(_) => (6, 8),
+            TypeKind::IAsyncActionWithProgress(_) | TypeKind::IAsyncOperationWithProgress(_) => (8, 10),
             _ => panic!("not an async type"),
         }
     }
@@ -187,7 +188,7 @@ impl WinRTAsyncFuture {
     /// Register SetCompleted using the typed windows-future API (IAsyncAction)
     /// or via dynamic vtable call (generic types).
     fn register_completed(&self, shared_waker: Arc<Mutex<Waker>>) -> Result<()> {
-        if self.async_info.iid() == crate::types::IASYNC_ACTION {
+        if self.async_info.iid() == IASYNC_ACTION {
             // IAsyncAction — use windows-future's typed handler directly
             let action: windows_future::IAsyncAction = self.async_info.info.cast()
                 .map_err(Error::WindowsError)?;
@@ -292,7 +293,7 @@ mod tests {
 
     use crate::result::{Error, Result};
     use crate::value::{AsyncInfo, WinRTValue};
-    use crate::types::WinRTType;
+    use crate::metadata_table::MetadataTable;
 
     #[tokio::test]
     async fn test_async_action() -> Result<()> {
@@ -303,9 +304,10 @@ mod tests {
         let async_info: IAsyncInfo = op.cast()
             .map_err(Error::WindowsError)?;
 
+        let reg = MetadataTable::new();
         let value = WinRTValue::Async(AsyncInfo {
             info: async_info,
-            async_type: WinRTType::IAsyncAction,
+            async_type: reg.async_action(),
         });
         let _result = value.await?;
         println!("IAsyncAction completed successfully");
