@@ -53,7 +53,8 @@ mod tests {
         let uriFactory = factory.cast::<IUriRuntimeClassFactory>()?;
         let uriStatic: IUriEscapeStatics = factory.cast()?;
 
-        let uriFactoryInterface = interfaces::uri_factory();
+        let reg = crate::metadata_table::MetadataTable::new();
+        let uriFactoryInterface = interfaces::uri_factory(&reg);
         let result = uriFactoryInterface.methods[6].call_dynamic(
             uriFactory.as_raw(),
             &[WinRTValue::HString(

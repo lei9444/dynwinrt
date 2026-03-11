@@ -1,6 +1,6 @@
 use core::ffi::c_void;
-use libffi::middle::{Arg, Cif, arg};
-use windows_core::{HRESULT, HSTRING, IUnknown, Interface};
+use libffi::middle::{Arg, arg};
+use windows_core::{HRESULT, Interface};
 
 use crate::{abi::AbiValue, signature::Parameter, value::WinRTValue};
 
@@ -14,11 +14,17 @@ pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_
     }
 }
 
-pub fn call_winrt_method_1<T1>(vtable_index: usize, obj: *mut c_void, x1: T1) -> HRESULT {
-    let ptr : *mut c_void = unsafe { std::mem::transmute(&x1) };
-    println!("Calling winrt method 1 vtable index: {} with obj {} x1 {}", vtable_index, obj as usize, unsafe { *(ptr as *mut usize) }); 
+pub fn call_winrt_method_0(vtable_index: usize, obj: *mut c_void) -> HRESULT {
     let method_ptr = get_vtable_function_ptr(obj, vtable_index);
+    unsafe {
+        let method: extern "system" fn(*mut c_void) -> HRESULT =
+            std::mem::transmute(method_ptr);
+        method(obj)
+    }
+}
 
+pub fn call_winrt_method_1<T1>(vtable_index: usize, obj: *mut c_void, x1: T1) -> HRESULT {
+    let method_ptr = get_vtable_function_ptr(obj, vtable_index);
     unsafe {
         let method: extern "system" fn(*mut c_void, T1) -> HRESULT =
             std::mem::transmute(method_ptr);
@@ -32,9 +38,7 @@ pub fn call_winrt_method_2<T1, T2>(
     x1: T1,
     x2: T2,
 ) -> HRESULT {
-    println!("Calling winrt method 2 vtable index: {}", vtable_index);
     let method_ptr = get_vtable_function_ptr(obj, vtable_index);
-
     unsafe {
         let method: extern "system" fn(*mut c_void, T1, T2) -> HRESULT =
             std::mem::transmute(method_ptr);
@@ -42,45 +46,87 @@ pub fn call_winrt_method_2<T1, T2>(
     }
 }
 
-pub fn call_winrt_method_3<T1, T2, T3>(
+/// Direct call for 1-in + 0-out (setter). Dispatches by value type.
+pub fn call_1in(
     vtable_index: usize,
     obj: *mut c_void,
-    x1: T1,
-    x2: T2,
-    x3: T3,
+    in_val: &WinRTValue,
 ) -> HRESULT {
-    println!("Calling winrt method 2 vtable index: {}", vtable_index);
-    let method_ptr = get_vtable_function_ptr(obj, vtable_index);
-
-    unsafe {
-        let method: extern "system" fn(*mut c_void, T1, T2, T3) -> HRESULT =
-            std::mem::transmute(method_ptr);
-        method(obj, x1, x2, x3)
+    match in_val {
+        WinRTValue::Bool(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::I8(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::U8(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::I16(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::U16(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::I32(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::U32(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::I64(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::U64(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::F32(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::F64(v) => call_winrt_method_1(vtable_index, obj, *v),
+        WinRTValue::Object(o) => call_winrt_method_1(vtable_index, obj, o.as_raw()),
+        WinRTValue::Guid(g) => call_winrt_method_1(vtable_index, obj, *g),
+        _ => panic!("call_1in: unsupported in-param type {:?}", in_val),
     }
 }
 
-use crate::array::{serialize_array_elements, deserialize_array_elements};
+/// Direct call for 1-in + 1-out. Dispatches by value type.
+pub fn call_1in_1out(
+    vtable_index: usize,
+    obj: *mut c_void,
+    in_val: &WinRTValue,
+    out_ptr: *mut c_void,
+) -> HRESULT {
+    match in_val {
+        WinRTValue::Bool(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::I8(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::U8(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::I16(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::U16(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::I32(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::U32(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::I64(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::U64(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::F32(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::F64(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
+        WinRTValue::Object(o) => call_winrt_method_2(vtable_index, obj, o.as_raw(), out_ptr),
+        WinRTValue::Guid(g) => call_winrt_method_2(vtable_index, obj, *g, out_ptr),
+        _ => panic!("call_1in_1out: unsupported in-param type {:?}", in_val),
+    }
+}
+
+use crate::array::serialize_array_elements;
+use crate::metadata_table::{TypeHandle, TypeKind};
 
 /// Stable heap storage for array in-param data (must outlive ffi call).
 struct ArrayInSlot {
     length: u32,
-    buffer: Vec<u8>,
-    data_ptr: *const u8, // cached buffer.as_ptr(), stored for stable arg reference
+    data_ptr: *const u8, // points into the source ArrayData's buffer
 }
 
 /// Stable heap storage for array out-param data (callee writes into these fields).
 struct ArrayOutSlot {
     length: u32,
     data_ptr: *mut c_void,
-    element_type: crate::types::WinRTType,
+    element_type: TypeHandle,
 }
 
-/// Stable heap storage for FillArray out-param data (caller-allocated buffer).
+/// Stable heap storage for FillArray out-param data (caller-allocated via CoTaskMemAlloc).
 struct FillArraySlot {
     capacity: u32,
-    buffer: Vec<u8>,
-    buffer_ptr: *mut u8, // cached buffer.as_mut_ptr()
-    element_type: crate::types::WinRTType,
+    buffer_ptr: *mut u8, // CoTaskMemAlloc'd
+    element_type: TypeHandle,
+}
+
+impl Drop for FillArraySlot {
+    fn drop(&mut self) {
+        // Free the buffer if ownership was not transferred to ArrayData
+        if !self.buffer_ptr.is_null() {
+            unsafe {
+                windows::Win32::System::Com::CoTaskMemFree(Some(self.buffer_ptr as *mut c_void));
+            }
+        }
+    }
 }
 
 pub fn call_winrt_method_dynamic(
@@ -91,8 +137,7 @@ pub fn call_winrt_method_dynamic(
     out_count: usize,
     cif: &libffi::middle::Cif,
 ) -> windows_core::Result<Vec<WinRTValue>> {
-    use crate::type_table::ValueTypeData;
-    use crate::types::WinRTType;
+    use crate::metadata_table::ValueTypeData;
     use libffi::middle::CodePtr;
 
     let fptr = get_vtable_function_ptr(obj, vtable_index);
@@ -126,14 +171,17 @@ pub fn call_winrt_method_dynamic(
                 let array_data = args[p.value_index]
                     .as_array()
                     .expect("Expected WinRTValue::Array with capacity for FillArray parameter");
-                let elem_type = p.typ.array_element_type().clone();
+                let elem_type = p.typ.array_element_type();
                 let capacity = array_data.len() as u32;
                 let elem_size = elem_type.element_size();
-                let mut buffer = vec![0u8; capacity as usize * elem_size];
-                let buffer_ptr = buffer.as_mut_ptr();
+                let total_bytes = capacity as usize * elem_size;
+                let buffer_ptr = unsafe {
+                    windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8
+                };
+                assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
+                unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
                 let slot = Box::new(FillArraySlot {
                     capacity,
-                    buffer,
                     buffer_ptr,
                     element_type: elem_type,
                 });
@@ -148,7 +196,7 @@ pub fn call_winrt_method_dynamic(
                 let slot = Box::new(ArrayOutSlot {
                     length: 0u32,
                     data_ptr: std::ptr::null_mut(),
-                    element_type: p.typ.array_element_type().clone(),
+                    element_type: p.typ.array_element_type(),
                 });
                 let slot_idx = array_out_slots.len();
                 array_out_map.push(Some(slot_idx));
@@ -160,8 +208,8 @@ pub fn call_winrt_method_dynamic(
                 out_ptrs.push(std::ptr::null());
                 struct_out_values.push(None);
                 fill_array_map.push(None);
-            } else if let WinRTType::Struct(handle) = &p.typ {
-                let val = handle.default_value();
+            } else if matches!(p.typ.kind(), TypeKind::Struct(_)) {
+                let val = p.typ.default_value();
                 out_ptrs.push(val.as_ptr() as *const std::ffi::c_void);
                 out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
                 struct_out_values.push(Some(val));
@@ -183,14 +231,11 @@ pub fn call_winrt_method_dynamic(
             let array_data = args[p.value_index]
                 .as_array()
                 .expect("Expected WinRTValue::Array for array in-parameter");
-            let buffer = serialize_array_elements(array_data);
-            let mut slot = Box::new(ArrayInSlot {
-                length: array_data.len() as u32,
-                data_ptr: std::ptr::null(),
-                buffer,
-            });
-            slot.data_ptr = slot.buffer.as_ptr();
-            array_in_slots.push(slot);
+            let (ptr, len) = serialize_array_elements(array_data);
+            array_in_slots.push(Box::new(ArrayInSlot {
+                length: len as u32,
+                data_ptr: ptr,
+            }));
         }
     }
 
@@ -232,36 +277,28 @@ pub fn call_winrt_method_dynamic(
     for p in parameters {
         if p.is_out {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
-                // FillArray: deserialize from caller-allocated buffer (full capacity)
-                let slot = &fill_array_slots[slot_idx];
+                // FillArray: transfer CoTaskMem buffer ownership to ArrayData
+                let slot = &mut fill_array_slots[slot_idx];
                 let capacity = slot.capacity as usize;
-                let elements = deserialize_array_elements(
-                    &slot.element_type,
-                    slot.buffer_ptr as *mut c_void,
-                    capacity,
-                );
+                let ptr = slot.buffer_ptr as *mut c_void;
+                slot.buffer_ptr = std::ptr::null_mut(); // prevent FillArraySlot::drop from freeing
                 result_values.push(WinRTValue::Array(
-                    crate::value::ArrayData::from_values(slot.element_type.clone(), elements)
+                    crate::array::ArrayData::from_cotaskmem(
+                        slot.element_type.clone(), ptr, capacity,
+                    )
                 ));
             } else if let Some(slot_idx) = array_out_map[p.value_index] {
-                // Array out: read callee-written length + data_ptr, deserialize, free.
-                // Use a guard to ensure CoTaskMemFree is called even if deserialize panics.
+                // ReceiveArray: wrap callee-allocated CoTaskMem buffer directly.
+                // ArrayData takes ownership and will CoTaskMemFree + release elements on drop.
                 let slot = &array_out_slots[slot_idx];
                 let length = slot.length as usize;
                 let data_ptr = slot.data_ptr;
                 let array_value = if data_ptr.is_null() || length == 0 {
-                    crate::value::ArrayData::empty(slot.element_type.clone())
+                    crate::array::ArrayData::empty(slot.element_type.clone())
                 } else {
-                    struct CoTaskMemGuard(*mut c_void);
-                    impl Drop for CoTaskMemGuard {
-                        fn drop(&mut self) {
-                            unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(self.0)); }
-                        }
-                    }
-                    let _guard = CoTaskMemGuard(data_ptr);
-                    let elements = deserialize_array_elements(&slot.element_type, data_ptr, length);
-                    // _guard drops here (or on panic), freeing the callee-allocated buffer
-                    crate::value::ArrayData::from_values(slot.element_type.clone(), elements)
+                    crate::array::ArrayData::from_cotaskmem(
+                        slot.element_type.clone(), data_ptr, length,
+                    )
                 };
                 result_values.push(WinRTValue::Array(array_value));
             } else if let Some(struct_val) = struct_out_values[p.value_index].take() {

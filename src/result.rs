@@ -1,11 +1,12 @@
-use crate::{WinRTType, abi::AbiType};
+use crate::metadata_table::TypeKind;
+use crate::abi::AbiType;
 
 #[derive(Debug)]
 pub enum Error {
-    ExpectObjectTypeError(WinRTType),
-    InvalidType(WinRTType, WinRTType),
-    InvalidNestedOutType(WinRTType),
-    InvalidTypeAbiToWinRT(WinRTType, AbiType),
+    ExpectObjectTypeError(TypeKind),
+    InvalidType(TypeKind, TypeKind),
+    InvalidNestedOutType(TypeKind),
+    InvalidTypeAbiToWinRT(TypeKind, AbiType),
     WindowsError(windows_core::Error),
     TypeNotFound(String),
     NotAnInterface(String),
@@ -13,7 +14,7 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn expect_object_type(actual: WinRTType) -> Self {
+    pub fn expect_object_type(actual: TypeKind) -> Self {
         Error::ExpectObjectTypeError(actual)
     }
 
