@@ -124,43 +124,43 @@ pub async fn pick_path() -> crate::result::Result<WinRTValue> {
     use windows::Web::Http::HttpClient;
     use windows_core::{GUID, IInspectable, Interface};
     use windows_future::{IAsyncInfo, IAsyncOperation};
+    let reg = crate::metadata_table::MetadataTable::new();
     let factory = crate::roapi::ro_get_activation_factory_2(h!(
         "Microsoft.Windows.Storage.Pickers.FileOpenPicker"
     ))
     .unwrap();
     let iid = bindings::IFileOpenPickerFactory::IID;
     let fac = factory.cast(&iid).unwrap();
-    let picker = fac
-        .call_single_out(
-            6,
-            &crate::WinRTType::Object,
-            &[crate::value::WinRTValue::I64(0)],
-        )
-        .unwrap();
-    let picked_file = picker
-        .call_single_out(
-            13,
-            &crate::WinRTType::IAsyncOperation(
-                Box::new(crate::WinRTType::RuntimeClass(
-                    "Microsoft.Windows.Storage.Pickers.PickFileResult".into(),
-                    IAsyncOperation::<bindings::PickFileResult>::IID,
-                )),
-            ),
-            &[],
-        )
-        .unwrap();
+    let picker = {
+        let method = crate::signature::MethodSignature::new(&reg)
+            .add_in(reg.i64_type()).add_out(reg.object()).build(6);
+        method.call_dynamic(fac.as_object().unwrap().as_raw(), &[crate::value::WinRTValue::I64(0)])
+            .unwrap().into_iter().next().unwrap()
+    };
+    let picked_file = {
+        let async_op_type = reg.async_operation(&reg.runtime_class(
+            "Microsoft.Windows.Storage.Pickers.PickFileResult".into(),
+            IAsyncOperation::<bindings::PickFileResult>::IID,
+        ));
+        let method = crate::signature::MethodSignature::new(&reg)
+            .add_out(async_op_type).build(13);
+        method.call_dynamic(picker.as_object().unwrap().as_raw(), &[])
+            .unwrap().into_iter().next().unwrap()
+    };
 
     let res = picked_file.await?;
     println!("Picked file result: {:?}", res);
-    let path = res
-        .call_single_out(6, &crate::WinRTType::HString, &[])
-        .unwrap();
+    let path = {
+        let method = crate::signature::MethodSignature::new(&reg)
+            .add_out(reg.hstring()).build(6);
+        method.call_dynamic(res.as_object().unwrap().as_raw(), &[])
+            .unwrap().into_iter().next().unwrap()
+    };
     println!("Picked file: {:?}", path);
     Ok(path)
 }
 
 pub async fn get_bitmap_from_file() -> WinRTValue {
-    use crate::WinRTType;
     use windows::Storage::FileAccessMode;
     use windows::core::Interface;
     let picked = pick_path().await.unwrap().as_hstring().unwrap();
@@ -287,11 +287,12 @@ mod tests {
         // let c: HttpClient = HttpClient::new()?;
         // let u: windows::Foundation::Uri = unimplemented!();
 
-        let factoryInterface = interfaces::FileOpenPickerFactory();
+        let reg = crate::metadata_table::MetadataTable::new();
+        let factoryInterface = interfaces::FileOpenPickerFactory(&reg);
         let result = factoryInterface.methods[6]
             .call_dynamic(fac.as_raw(), &[crate::value::WinRTValue::I64(0)])?;
         let rv1 = &result[0].as_object().unwrap();
-        let pickerInterface = interfaces::FileOpenPicker();
+        let pickerInterface = interfaces::FileOpenPicker(&reg);
         let result = pickerInterface.methods[13].call_dynamic(
             rv1.as_raw(),
             &[], // No parameters
@@ -301,16 +302,18 @@ mod tests {
         // let asv: IAsyncOperation<bindings::PickFileResult> = rv2.cast().unwrap();
         // let rr = asv.join()?;
         let rva: IAsyncInfo = rv2.cast().unwrap();
+        let reg = crate::metadata_table::MetadataTable::new();
         let async_val = crate::value::WinRTValue::Async(crate::value::AsyncInfo {
             info: rva,
-            async_type: crate::WinRTType::IAsyncOperation(Box::new(crate::WinRTType::Object)),
+            async_type: reg.async_operation(&reg.object()),
         });
         let res = async_val.await.map_err(|e| match e {
             crate::result::Error::WindowsError(we) => we,
             other => windows_core::Error::new(windows_core::HRESULT(-1), &other.message()),
         })?;
         println!("Picked file result: {:?}", res);
-        let pfrvtbl = interfaces::PickFileResult();
+        let reg = crate::metadata_table::MetadataTable::new();
+        let pfrvtbl = interfaces::PickFileResult(&reg);
         let path_results = pfrvtbl.methods[6].call_dynamic(res.as_object().unwrap().as_raw(), &[])?;
         let path = path_results[0].as_hstring().unwrap();
         // let mut ptr = std::ptr::null_mut();

@@ -9,12 +9,14 @@ mod interfaces;
 mod result;
 mod roapi;
 mod signature;
-mod types;
 mod value;
 mod winapp;
 
+mod array;
 mod bindings;
 mod dasync;
+mod meta;
+pub mod metadata_table;
 
 pub struct IIds;
 impl IIds {
@@ -28,6 +30,7 @@ impl IIds {
         IAsyncOperation::<bindings::TextRecognizer>::IID;
     pub const IAsyncOperationRecognizedText: windows_core::GUID =
         IAsyncOperation::<bindings::RecognizedText>::IID;
+    pub const TextRecognizer: windows_core::GUID = bindings::TextRecognizer::IID;
     pub const RecognizedText: windows_core::GUID = bindings::RecognizedText::IID;
 }
 
@@ -41,7 +44,8 @@ pub use crate::result::Result;
 use crate::roapi::query_interface;
 pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
-pub use crate::types::WinRTType;
+pub use crate::metadata_table::{TypeHandle, TypeKind, MetadataTable, MethodHandle, ValueTypeData};
+pub use crate::array::ArrayData;
 pub use crate::value::WinRTValue;
 use crate::winapp::pick_path;
 pub use crate::winapp::test_pick_open_picker_full_dynamic;
@@ -184,7 +188,8 @@ mod tests {
 
         let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment"))?;
 
-        let vtable = uri_vtable();
+        let reg = metadata_table::MetadataTable::new();
+        let vtable = uri_vtable(&reg);
 
         let get_runtime_classname = &vtable.methods[4];
         assert_eq!(
@@ -210,15 +215,10 @@ mod tests {
     #[test]
     fn test_uri_call_dynamic() -> Result<()> {
         let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment")).unwrap();
-        let rptr = uri.as_raw();
-        let ukn = unsafe { IUnknown::from_raw_borrowed(&rptr) }.unwrap();
-        let obj = WinRTValue::Object(ukn.clone());
-        let res = obj.call_single_out(17, &WinRTType::HString, &[]).unwrap();
-        // let s : HSTRING = Default::default();
-        // let mut p : *mut std::ffi::c_void = std::ptr::null_mut();
-        // call::call_winrt_method_1(17, uri.as_raw(), &mut p);
-        // let s : HSTRING = unsafe { core::mem::transmute(p) };
-        assert_eq!(res.as_hstring().unwrap(), "https");
+        let reg = metadata_table::MetadataTable::new();
+        let vtable = interfaces::uri_vtable(&reg);
+        let res = vtable.methods[17].call_dynamic(uri.as_raw(), &[])?;
+        assert_eq!(res[0].as_hstring().unwrap(), "https");
         Ok(())
     }
 
@@ -313,6 +313,224 @@ mod tests {
                 method.signature(&[]).return_type
             );
         }
+    }
+
+    #[test]
+    fn test_struct_in_param_geopoint_create() -> Result<()> {
+        use windows::Devices::Geolocation::Geopoint;
+        use windows::Win32::System::WinRT::{
+            IActivationFactory, RO_INIT_MULTITHREADED, RoGetActivationFactory, RoInitialize,
+        };
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // 1. Define BasicGeoposition { Latitude: f64, Longitude: f64, Altitude: f64 }
+        let reg = metadata_table::MetadataTable::new();
+        let f64_h = reg.f64_type();
+        let geo_type = reg.define_struct(&[f64_h.clone(), f64_h.clone(), f64_h]);
+
+        // 2. Create and populate struct value
+        let mut geo_val = geo_type.default_value();
+        geo_val.set_field(0, 47.643f64);
+        geo_val.set_field(1, -122.131f64);
+        geo_val.set_field(2, 100.0f64);
+
+        // 3. Get IGeopointFactory
+        let afactory = unsafe {
+            RoGetActivationFactory::<IActivationFactory>(
+                h!("Windows.Devices.Geolocation.Geopoint"),
+            )
+        }?;
+        let geopoint_factory =
+            afactory.cast::<windows::Devices::Geolocation::IGeopointFactory>()?;
+
+        // 4. Define IGeopointFactory with Create method at vtable index 6
+        // ABI: fn(this, BasicGeoposition, *out) -> HRESULT
+        let mut factory_sig = InterfaceSignature::define_from_iinspectable(
+            "IGeopointFactory",
+            windows::Devices::Geolocation::IGeopointFactory::IID,
+            &reg,
+        );
+        factory_sig.add_method(
+            MethodSignature::new(&reg)
+                .add_in(geo_type.clone())
+                .add_out(reg.object()),
+        );
+
+        // 5. Call Create via MethodSignature
+        let create_method = &factory_sig.methods[6];
+        let results = create_method.call_dynamic(
+            geopoint_factory.as_raw(),
+            &[WinRTValue::Struct(geo_val)],
+        )?;
+
+        // 6. Verify
+        let geopoint_obj = results[0].as_object().unwrap();
+        let geopoint: Geopoint = geopoint_obj.cast()?;
+        let pos = geopoint.Position()?;
+        assert!((pos.Latitude - 47.643).abs() < 1e-6);
+        assert!((pos.Longitude - (-122.131)).abs() < 1e-6);
+        assert!((pos.Altitude - 100.0).abs() < 1e-6);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_out_param_geopoint_position() -> Result<()> {
+        use windows::Devices::Geolocation::{BasicGeoposition, Geopoint, IGeopoint};
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // 1. Create a Geopoint using static projection (known-good)
+        let position = BasicGeoposition {
+            Latitude: 47.643,
+            Longitude: -122.131,
+            Altitude: 100.0,
+        };
+        let geopoint = Geopoint::Create(position)?;
+
+        // 2. Define BasicGeoposition struct type
+        let reg = metadata_table::MetadataTable::new();
+        let f64_h = reg.f64_type();
+        let geo_type = reg.define_struct(&[f64_h.clone(), f64_h.clone(), f64_h]);
+
+        // 3. Define IGeopoint with get_Position at vtable index 6
+        // ABI: fn(this, *out_BasicGeoposition) -> HRESULT
+        let mut igeopoint_sig = InterfaceSignature::define_from_iinspectable(
+            "IGeopoint",
+            IGeopoint::IID,
+            &reg,
+        );
+        igeopoint_sig.add_method(
+            MethodSignature::new(&reg)
+                .add_out(geo_type),
+        );
+
+        // 4. Call get_Position via MethodSignature
+        let igeopoint: IGeopoint = geopoint.cast()?;
+        let get_position = &igeopoint_sig.methods[6];
+        let results = get_position.call_dynamic(igeopoint.as_raw(), &[])?;
+
+        // 5. Verify
+        let data = results[0].as_struct().expect("Expected WinRTValue::Struct");
+        let lat: f64 = data.get_field(0);
+        let lon: f64 = data.get_field(1);
+        let alt: f64 = data.get_field(2);
+        assert!((lat - 47.643).abs() < 1e-6);
+        assert!((lon - (-122.131)).abs() < 1e-6);
+        assert!((alt - 100.0).abs() < 1e-6);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pass_array_create_int32() -> Result<()> {
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // IPropertyValueStatics: {629BDBC8-D932-4FF4-96B9-8D96C5C1E858}
+        let statics_iid = windows_core::GUID::from_u128(0x629BDBC8_D932_4FF4_96B9_8D96C5C1E858);
+
+        // Get factory and QI to IPropertyValueStatics
+        let factory = WinRTValue::from_activation_factory(h!("Windows.Foundation.PropertyValue")).unwrap();
+        let statics = factory.cast(&statics_iid).unwrap();
+
+        // Build IPropertyValueStatics interface signature
+        // vtable[6..28] = scalar Create methods (23 methods)
+        // vtable[29] = CreateInt32Array(UINT32 length, INT32* data, IInspectable** result)
+        let reg = metadata_table::MetadataTable::new();
+        let mut iface = InterfaceSignature::define_from_iinspectable(
+            "IPropertyValueStatics",
+            statics_iid,
+            &reg,
+        );
+        for _ in 0..23 {
+            iface.add_method(MethodSignature::new(&reg)); // placeholders for vtable[6..28]
+        }
+        iface.add_method(
+            MethodSignature::new(&reg)
+                .add_in(reg.array(&reg.i32_type()))
+                .add_out(reg.object()),
+        );
+
+        // Create array data
+        let array_reg = metadata_table::MetadataTable::new();
+        let array_arg = WinRTValue::Array(value::ArrayData::from_values(
+            array_reg.i32_type(),
+            &[WinRTValue::I32(10), WinRTValue::I32(20), WinRTValue::I32(30)],
+        ));
+
+        // Call CreateInt32Array at vtable index 29
+        let results = iface.methods[29].call_dynamic(
+            statics.as_object().unwrap().as_raw(),
+            &[array_arg],
+        )?;
+
+        assert_eq!(results.len(), 1);
+        let result_obj = results[0].as_object().unwrap();
+
+        // Verify by reading back via static projection
+        let inspectable: windows_core::IInspectable = result_obj.cast()?;
+        let pv: windows::Foundation::IPropertyValue = inspectable.cast()?;
+        let mut readback = windows::core::Array::<i32>::new();
+        pv.GetInt32Array(&mut readback)?;
+        assert_eq!(&readback[..], &[10, 20, 30]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_receive_array_get_int32() -> Result<()> {
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        // Create a PropertyValue with known data via static projection
+        let test_data = vec![100i32, 200, 300, 400, 500];
+        let prop = windows::Foundation::PropertyValue::CreateInt32Array(&test_data)?;
+
+        // IPropertyValue: {4BD682DD-7554-40E9-9A9B-82654EDE7E62}
+        let ipv_iid = windows_core::GUID::from_u128(0x4BD682DD_7554_40E9_9A9B_82654EDE7E62);
+
+        // QI to IPropertyValue
+        let prop_unk: IUnknown = prop.cast()?;
+        let mut ipv_ptr = std::ptr::null_mut();
+        unsafe { prop_unk.query(&ipv_iid, &mut ipv_ptr) }.ok()?;
+        let ipv = unsafe { IUnknown::from_raw(ipv_ptr) };
+
+        // Build IPropertyValue interface signature
+        // vtable[6..25] = scalar Get methods (20 methods)
+        // vtable[26..28] = GetUInt8Array, GetInt16Array, GetUInt16Array
+        // vtable[29] = GetInt32Array(UINT32* length, INT32** data)
+        let reg = metadata_table::MetadataTable::new();
+        let mut iface = InterfaceSignature::define_from_iinspectable(
+            "IPropertyValue",
+            ipv_iid,
+            &reg,
+        );
+        for _ in 0..23 {
+            iface.add_method(MethodSignature::new(&reg)); // placeholders for vtable[6..28]
+        }
+        iface.add_method(
+            MethodSignature::new(&reg)
+                .add_out(reg.array(&reg.i32_type())),
+        );
+
+        // Call GetInt32Array at vtable index 29
+        let results = iface.methods[29].call_dynamic(ipv.as_raw(), &[])?;
+
+        // Verify
+        let array = results[0].as_array().expect("Expected WinRTValue::Array");
+        assert_eq!(array.len(), 5);
+        assert_eq!(array.get_i32(0), 100);
+        assert_eq!(array.get_i32(1), 200);
+        assert_eq!(array.get_i32(2), 300);
+        assert_eq!(array.get_i32(3), 400);
+        assert_eq!(array.get_i32(4), 500);
+
+        Ok(())
     }
 }
 
@@ -438,13 +656,15 @@ pub fn print_ocr_paths(orc_result: WinRTValue) {
 pub async fn ocr_demo(bitmap: WinRTValue) -> WinRTValue {
     // use bindings::*;
     use winapp::*;
+    let reg = metadata_table::MetadataTable::new();
     let factory =
         WinRTValue::from_activation_factory(h!("Microsoft.Windows.AI.Imaging.TextRecognizer"))
             .unwrap();
     let text_recongizer_factory = factory.cast(&IIds::ITextRecognizerStatics).unwrap();
-    let ready_state = text_recongizer_factory
-        .call_single_out_2(6, &WinRTType::I32, &[])
-        .unwrap()
+    let get_ready_state = signature::MethodSignature::new(&reg).add_out(reg.i32_type()).build(6);
+    let ready_state = get_ready_state
+        .call_dynamic(text_recongizer_factory.as_object().unwrap().as_raw(), &[])
+        .unwrap()[0]
         .as_i32()
         .unwrap();
     println!("TextRecognizer ready state: {:?}", ready_state);
@@ -455,48 +675,31 @@ pub async fn ocr_demo(bitmap: WinRTValue) -> WinRTValue {
     }
     println!("Creating TextRecognizer asynchronously...");
 
-    // let f2 = factory.as_object().unwrap().cast::<ITextRecognizerStatics>().unwrap();
-    let recognizer_v = text_recongizer_factory
-        .call_single_out(
-            8,
-            &WinRTType::IAsyncOperation(
-                Box::new(WinRTType::RuntimeClass(
-                    "Microsoft.Windows.AI.Imaging.TextRecognizer".into(),
-                    bindings::TextRecognizer::IID,
-                )),
-            ),
-            &[],
-        )
-        .unwrap();
+    let async_op_type = reg.async_operation(&reg.runtime_class(
+        "Microsoft.Windows.AI.Imaging.TextRecognizer".into(),
+        bindings::TextRecognizer::IID,
+    ));
+    let create_async = signature::MethodSignature::new(&reg).add_out(async_op_type).build(8);
+    let recognizer_v = create_async
+        .call_dynamic(text_recongizer_factory.as_object().unwrap().as_raw(), &[])
+        .unwrap().into_iter().next().unwrap();
     println!("TextRecognizer created successfully");
     let recognizer = recognizer_v.await.unwrap();
     println!("SoftwareBitmap wrapped successfully");
-    // let bitmap_v: SoftwareBitmap = bitmap.as_object().unwrap().cast().unwrap();
     let bitmapt = bitmap.cast(&IIds::ISoftwareBitmap).unwrap();
     let image_buffer_af = WinRTValue::from_activation_factory(h!("Microsoft.Graphics.Imaging.ImageBuffer")).unwrap();
-    let ImageBufferStatic = image_buffer_af.cast(&IIds::IImageBufferStatics).unwrap();
-    // let image_buffer = ImageBuffer::CreateForSoftwareBitmap(&bitmap_v).unwrap();
-    let image_buffer = ImageBufferStatic
-        .call_single_out(
-            7,
-            &WinRTType::Object,
-            // &[WinRTValue::I64(bitmapt.as_object().unwrap().as_raw() as *const _ as i64)],
-            &[bitmapt]
-        )
-        .unwrap()
+    let image_buffer_static = image_buffer_af.cast(&IIds::IImageBufferStatics).unwrap();
+    let create_for_bitmap = signature::MethodSignature::new(&reg).add_in(reg.object()).add_out(reg.object()).build(7);
+    let image_buffer = create_for_bitmap
+        .call_dynamic(image_buffer_static.as_object().unwrap().as_raw(), &[bitmapt])
+        .unwrap().into_iter().next().unwrap()
         .as_object()
         .unwrap();
     println!("ImageBuffer created from file successfully");
-    // let rukn = unsafe { IUnknown::from_raw(recognizer.as_raw())};
-    // let val = WinRTValue::Object(rukn);
-    // std::mem::forget(recognizer);
-    let res = recognizer
-        .call_single_out(
-            7,
-            &WinRTType::Object,
-            &[WinRTValue::I64(image_buffer.as_raw() as i64)],
-        )
-        .unwrap();
+    let recognize = signature::MethodSignature::new(&reg).add_in(reg.i64_type()).add_out(reg.object()).build(7);
+    let res = recognize
+        .call_dynamic(recognizer.as_object().unwrap().as_raw(), &[WinRTValue::I64(image_buffer.as_raw() as i64)])
+        .unwrap().into_iter().next().unwrap();
         // .as_object()
         // .unwrap();
     let result = res.cast(&IIds::RecognizedText).unwrap();
@@ -514,23 +717,18 @@ pub async fn ocr_demo(bitmap: WinRTValue) -> WinRTValue {
 pub async fn windows_ai_ocr_api_call_dynamic(path: &str) -> result::Result<()> {
     use bindings::*;
     use winapp::*;
+    let reg = metadata_table::MetadataTable::new();
     println!("WinAppSdk initialized");
-    // let factory = roapi::ro_get_activation_factory())?;
-    // let factory_ukn = WinRTValue::Object(factory.cast::<windows_core::IUnknown>()?);
     let factory =
         WinRTValue::from_activation_factory(h!("Microsoft.Windows.AI.Imaging.TextRecognizer"))
             .unwrap();
     let text_recongizer_factory = factory.cast(&IIds::ITextRecognizerStatics).unwrap();
-    let ready_state = text_recongizer_factory
-        .call_single_out_2(6, &WinRTType::I32, &[])
-        .unwrap()
+    let get_ready_state = signature::MethodSignature::new(&reg).add_out(reg.i32_type()).build(6);
+    let ready_state = get_ready_state
+        .call_dynamic(text_recongizer_factory.as_object().unwrap().as_raw(), &[])
+        .unwrap()[0]
         .as_i32()
         .unwrap();
-    // let get_ready_state = MethodSignature::new().add_out(WinRTType::I32).build(6);
-    // let ready_state = get_ready_state.call_dynamic(text_recongizer_factory.as_object().unwrap().as_raw(), &[]).unwrap()[0]
-    //     .as_i32()
-    //     .unwrap();
-    // let ready_state = TextRecognizer::GetReadyState().unwrap();
     println!("TextRecognizer ready state: {:?}", ready_state);
 
     if ready_state == AIFeatureReadyState::NotReady.0 {
@@ -546,22 +744,14 @@ pub async fn windows_ai_ocr_api_call_dynamic(path: &str) -> result::Result<()> {
     println!("Creating TextRecognizer asynchronously...");
 
     // let f2 = factory.as_object().unwrap().cast::<ITextRecognizerStatics>().unwrap();
-    let recognizer_v = text_recongizer_factory
-        .call_single_out(
-            8,
-            &WinRTType::IAsyncOperation(
-                Box::new(WinRTType::RuntimeClass(
-                    "Microsoft.Windows.AI.Imaging.TextRecognizer".into(),
-                    bindings::TextRecognizer::IID,
-                )),
-            ),
-            &[],
-        )
-        .map_err(|e| {
-            println!("Error calling CreateAsync: {}", e.message());
-            e
-        })
-        .unwrap();
+    let async_op_type = reg.async_operation(&reg.runtime_class(
+        "Microsoft.Windows.AI.Imaging.TextRecognizer".into(),
+        bindings::TextRecognizer::IID,
+    ));
+    let create_async = signature::MethodSignature::new(&reg).add_out(async_op_type).build(8);
+    let recognizer_v = create_async
+        .call_dynamic(text_recongizer_factory.as_object().unwrap().as_raw(), &[])
+        .unwrap().into_iter().next().unwrap();
     println!("TextRecognizer created successfully");
     let recognizer = recognizer_v.await?;
 
@@ -591,17 +781,10 @@ pub async fn windows_ai_ocr_api_call_dynamic(path: &str) -> result::Result<()> {
     // let rukn = unsafe { IUnknown::from_raw(recognizer.as_raw())};
     // let val = WinRTValue::Object(rukn);
     // std::mem::forget(recognizer);
-    let res = recognizer
-        .call_single_out(
-            7,
-            &WinRTType::Object,
-            &[WinRTValue::I64(image_buffer.as_raw() as i64)],
-        )
-        .map_err(|e| {
-            println!("Error calling RecognizeTextFromImageAsync: {}", e.message());
-            e
-        })
-        .unwrap();
+    let recognize = signature::MethodSignature::new(&reg).add_in(reg.i64_type()).add_out(reg.object()).build(7);
+    let res = recognize
+        .call_dynamic(recognizer.as_object().unwrap().as_raw(), &[WinRTValue::I64(image_buffer.as_raw() as i64)])
+        .unwrap().into_iter().next().unwrap();
         // .as_object()
         // .unwrap();
     // let result: bindings::RecognizedText = res.cast().unwrap();
