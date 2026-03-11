@@ -1,0 +1,13 @@
+[package]
+name = "dynwinrt-py"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "dynwinrt_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+dynwinrt = { path = "../../crates/dynwinrt" }
+pyo3 = "0.27.0"
