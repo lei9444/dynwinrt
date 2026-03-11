@@ -187,7 +187,9 @@ name = "dynwinrt-py"
 version = "0.1.0"
 dependencies = [
  "dynwinrt",
+ "pollster",
  "pyo3",
+ "windows",
 ]
 
 [[package]]
