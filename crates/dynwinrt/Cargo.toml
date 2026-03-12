@@ -38,8 +38,13 @@ features = [
 
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 futures = "0.3.31"
 windows-bindgen = "0.66.0"
+
+[[bench]]
+name = "uri_bench"
+harness = false
 
 [build-dependencies]
 windows-bindgen = "0.66.0"
