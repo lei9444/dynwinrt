@@ -129,8 +129,33 @@ impl DynWinRTType {
   }
 
   #[napi]
+  pub fn guid_type() -> Self {
+    DynWinRTType(TABLE.guid_type())
+  }
+
+  #[napi]
+  pub fn char16() -> Self {
+    DynWinRTType(TABLE.char16_type())
+  }
+
+  #[napi]
+  pub fn hresult() -> Self {
+    DynWinRTType(TABLE.hresult())
+  }
+
+  #[napi]
   pub fn interface(iid: &WinGUID) -> Self {
     DynWinRTType(TABLE.interface(iid.0))
+  }
+
+  #[napi]
+  pub fn delegate(iid: &WinGUID) -> Self {
+    DynWinRTType(TABLE.delegate(iid.0))
+  }
+
+  #[napi]
+  pub fn fill_array(element_type: &DynWinRTType) -> Self {
+    DynWinRTType(TABLE.fill_array(&element_type.0))
   }
 
   #[napi]
@@ -220,6 +245,14 @@ impl DynWinRTType {
         format!("Method '{}' not found", name)
       ))
   }
+
+  /// Compute the IID for this type (works for Interface, Parameterized, RuntimeClass, etc.)
+  #[napi]
+  pub fn iid(&self) -> napi::Result<WinGUID> {
+    self.0.iid()
+      .map(WinGUID)
+      .ok_or_else(|| napi::Error::from_reason("Type has no IID"))
+  }
 }
 
 #[napi]
@@ -232,6 +265,11 @@ impl WinGUID {
   pub fn parse(guid_str: String) -> Self {
     let guid = windows::core::GUID::try_from(guid_str.as_str()).unwrap();
     WinGUID(guid)
+  }
+
+  #[napi]
+  pub fn to_string(&self) -> String {
+    format!("{:?}", self.0)
   }
 }
 
@@ -314,16 +352,60 @@ impl DynWinRTValue {
   }
 
   #[napi]
-  pub fn i64(value: i64) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::I64(value))
+  pub fn bool_value(value: bool) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::Bool(value))
+  }
+  #[napi]
+  pub fn i8_value(value: i32) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::I8(value as i8))
+  }
+  #[napi]
+  pub fn u8_value(value: u32) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::U8(value as u8))
+  }
+  #[napi]
+  pub fn i16(value: i32) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::I16(value as i16))
+  }
+  #[napi]
+  pub fn u16(value: u32) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::U16(value as u16))
   }
   #[napi]
   pub fn i32(value: i32) -> DynWinRTValue {
     DynWinRTValue(dynwinrt::WinRTValue::I32(value))
   }
   #[napi]
+  pub fn u32(value: u32) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::U32(value))
+  }
+  #[napi]
+  pub fn i64(value: i64) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::I64(value))
+  }
+  #[napi]
+  pub fn u64(value: i64) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::U64(value as u64))
+  }
+  #[napi]
+  pub fn f32(value: f64) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::F32(value as f32))
+  }
+  #[napi]
+  pub fn f64(value: f64) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::F64(value))
+  }
+  #[napi]
   pub fn hstring(value: String) -> DynWinRTValue {
     DynWinRTValue(dynwinrt::WinRTValue::HString(HSTRING::from(value)))
+  }
+  #[napi]
+  pub fn guid(value: &WinGUID) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::Guid(value.0))
+  }
+  #[napi]
+  pub fn null_value() -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::Null)
   }
 
   #[napi]
@@ -344,23 +426,27 @@ impl DynWinRTValue {
   }
 
   #[napi]
-  pub fn call_0(&self, method_index: i32, return_type: &DynWinRTType) -> DynWinRTValue {
+  pub fn call_0(&self, method_index: i32, return_type: &DynWinRTType) -> napi::Result<DynWinRTValue> {
     let method = dynwinrt::MethodSignature::new(&*TABLE)
       .add_out(return_type.0.clone())
       .build(method_index as usize);
-    let obj_raw = self.0.as_object().unwrap().as_raw();
-    let result = method.call_dynamic(obj_raw, &[]).unwrap();
-    DynWinRTValue(result.into_iter().next().unwrap())
+    let obj_raw = self.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("call_0: self is not an Object"))?.as_raw();
+    let result = method.call_dynamic(obj_raw, &[])
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(DynWinRTValue(result.into_iter().next().unwrap()))
   }
 
   #[napi]
-  pub fn call_single_out_0(&self, method_index: i32, return_type: &DynWinRTType) -> DynWinRTValue {
+  pub fn call_single_out_0(&self, method_index: i32, return_type: &DynWinRTType) -> napi::Result<DynWinRTValue> {
     let method = dynwinrt::MethodSignature::new(&*TABLE)
       .add_out(return_type.0.clone())
       .build(method_index as usize);
-    let obj_raw = self.0.as_object().unwrap().as_raw();
-    let result = method.call_dynamic(obj_raw, &[]).unwrap();
-    DynWinRTValue(result.into_iter().next().unwrap())
+    let obj_raw = self.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("call_single_out_0: self is not an Object"))?.as_raw();
+    let result = method.call_dynamic(obj_raw, &[])
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(DynWinRTValue(result.into_iter().next().unwrap()))
   }
 
   #[napi]
@@ -369,15 +455,17 @@ impl DynWinRTValue {
     method_index: i32,
     return_type: &DynWinRTType,
     v1: &DynWinRTValue,
-  ) -> DynWinRTValue {
+  ) -> napi::Result<DynWinRTValue> {
     let in_type = TABLE.handle_from_kind(v1.0.get_type_kind());
     let method = dynwinrt::MethodSignature::new(&*TABLE)
       .add_in(in_type)
       .add_out(return_type.0.clone())
       .build(method_index as usize);
-    let obj_raw = self.0.as_object().unwrap().as_raw();
-    let result = method.call_dynamic(obj_raw, &[v1.0.clone()]).unwrap();
-    DynWinRTValue(result.into_iter().next().unwrap())
+    let obj_raw = self.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("call_single_out_1: self is not an Object"))?.as_raw();
+    let result = method.call_dynamic(obj_raw, &[v1.0.clone()])
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(DynWinRTValue(result.into_iter().next().unwrap()))
   }
 
   /// General-purpose method call accepting any number of arguments.
@@ -423,6 +511,42 @@ impl DynWinRTValue {
     }
   }
 
+  /// Void method call (no return value).
+  #[napi]
+  pub fn call_void(
+    &self,
+    method_index: i32,
+    in_types: Vec<&DynWinRTType>,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<()> {
+    let mut method = dynwinrt::MethodSignature::new(&*TABLE);
+    for t in &in_types {
+      method = method.add_in(t.0.clone());
+    }
+
+    let obj = match &self.0 {
+      dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+      _ => return Err(napi::Error::from_reason("callVoid() requires an Object value")),
+    };
+
+    let mut iface = dynwinrt::InterfaceSignature::define_from_iinspectable(
+      "",
+      Default::default(),
+      &*TABLE,
+    );
+    let target_index = method_index as usize;
+    for _ in 6..target_index {
+      iface.add_method(dynwinrt::MethodSignature::new(&*TABLE));
+    }
+    iface.add_method(method);
+
+    let winrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
+    iface.methods[target_index]
+      .call_dynamic(obj, &winrt_args)
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(())
+  }
+
   #[napi]
   pub fn cast(&self, iid: &WinGUID) -> DynWinRTValue {
     let result = self.0.cast(&iid.0).unwrap();
@@ -432,9 +556,55 @@ impl DynWinRTValue {
   #[napi]
   pub fn to_number(&self) -> i32 {
     match &self.0 {
+      dynwinrt::WinRTValue::Bool(b) => if *b { 1 } else { 0 },
+      dynwinrt::WinRTValue::I8(i) => *i as i32,
+      dynwinrt::WinRTValue::U8(i) => *i as i32,
+      dynwinrt::WinRTValue::I16(i) => *i as i32,
+      dynwinrt::WinRTValue::U16(i) => *i as i32,
       dynwinrt::WinRTValue::I32(i) => *i,
-      _ => panic!("Cannot convert to number"),
+      dynwinrt::WinRTValue::U32(i) => *i as i32,
+      dynwinrt::WinRTValue::HResult(hr) => hr.0,
+      _ => panic!("Cannot convert {:?} to number", self.0.get_type_kind()),
     }
+  }
+
+  #[napi]
+  pub fn to_bool(&self) -> bool {
+    match &self.0 {
+      dynwinrt::WinRTValue::Bool(b) => *b,
+      _ => self.to_number() != 0,
+    }
+  }
+
+  #[napi]
+  pub fn to_i64(&self) -> i64 {
+    match &self.0 {
+      dynwinrt::WinRTValue::I64(i) => *i,
+      dynwinrt::WinRTValue::U64(i) => *i as i64,
+      _ => self.to_number() as i64,
+    }
+  }
+
+  #[napi]
+  pub fn to_f64(&self) -> f64 {
+    match &self.0 {
+      dynwinrt::WinRTValue::F64(f) => *f,
+      dynwinrt::WinRTValue::F32(f) => *f as f64,
+      _ => self.to_number() as f64,
+    }
+  }
+
+  #[napi]
+  pub fn to_guid(&self) -> napi::Result<WinGUID> {
+    match &self.0 {
+      dynwinrt::WinRTValue::Guid(g) => Ok(WinGUID(*g)),
+      _ => Err(napi::Error::from_reason("Value is not a GUID")),
+    }
+  }
+
+  #[napi]
+  pub fn is_null(&self) -> bool {
+    self.0.is_null_object()
   }
 
   #[napi]

@@ -65,6 +65,7 @@ pub fn call_1in(
         WinRTValue::F32(v) => call_winrt_method_1(vtable_index, obj, *v),
         WinRTValue::F64(v) => call_winrt_method_1(vtable_index, obj, *v),
         WinRTValue::Object(o) => call_winrt_method_1(vtable_index, obj, o.as_raw()),
+        WinRTValue::Null => call_winrt_method_1(vtable_index, obj, std::ptr::null_mut::<c_void>()),
         WinRTValue::Guid(g) => call_winrt_method_1(vtable_index, obj, *g),
         _ => panic!("call_1in: unsupported in-param type {:?}", in_val),
     }
@@ -90,6 +91,7 @@ pub fn call_1in_1out(
         WinRTValue::F32(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
         WinRTValue::F64(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
         WinRTValue::Object(o) => call_winrt_method_2(vtable_index, obj, o.as_raw(), out_ptr),
+        WinRTValue::Null => call_winrt_method_2(vtable_index, obj, std::ptr::null_mut::<c_void>(), out_ptr),
         WinRTValue::Guid(g) => call_winrt_method_2(vtable_index, obj, *g, out_ptr),
         _ => panic!("call_1in_1out: unsupported in-param type {:?}", in_val),
     }
@@ -304,8 +306,10 @@ pub fn call_winrt_method_dynamic(
             } else if let Some(struct_val) = struct_out_values[p.value_index].take() {
                 result_values.push(WinRTValue::Struct(struct_val));
             } else {
-                let out_value = p.typ.from_out_value(&out_values[p.value_index]);
-                result_values.push(out_value.unwrap());
+                let mut out_value = p.typ.from_out_value(&out_values[p.value_index]).unwrap();
+                // Safety: null IUnknown crashes on clone/drop. Replace with Null variant.
+                out_value.sanitize_null_object();
+                result_values.push(out_value);
             }
         }
     }

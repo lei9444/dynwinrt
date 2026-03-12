@@ -236,9 +236,16 @@ impl TypeHandle {
             TypeKind::F32 => WinRTValue::F32(0.0),
             TypeKind::F64 => WinRTValue::F64(0.0),
 
+            // COM pointer types: use RawPtr(null) as out-buffer.
+            // We must NOT use IUnknown::from_raw(null) because it is UB — the null
+            // vtable pointer triggers undefined behavior under release optimizations.
+            // After the COM call writes a valid pointer, from_out() wraps it properly.
             TypeKind::Object | TypeKind::Interface(_) | TypeKind::Delegate(_)
-            | TypeKind::RuntimeClass(_) => {
-                WinRTValue::Object(unsafe { IUnknown::from_raw(std::ptr::null_mut()) })
+            | TypeKind::RuntimeClass(_)
+            | TypeKind::Parameterized(_)
+            | TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_) => {
+                WinRTValue::RawPtr(std::ptr::null_mut())
             }
 
             TypeKind::HString => WinRTValue::HString(windows_core::HSTRING::new()),
@@ -249,15 +256,6 @@ impl TypeHandle {
 
             TypeKind::Generic { piid, .. } => {
                 panic!("Cannot create default value for Generic({:?})", piid)
-            }
-            // Parameterized types (IVector<T>, IMap<K,V>, etc.) are COM pointers at ABI level
-            TypeKind::Parameterized(_) => {
-                WinRTValue::Object(unsafe { IUnknown::from_raw(std::ptr::null_mut()) })
-            }
-            // Async types are COM pointers at ABI level, same as Object
-            TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
-            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_) => {
-                WinRTValue::Object(unsafe { IUnknown::from_raw(std::ptr::null_mut()) })
             }
 
             TypeKind::ArrayOfIUnknown => {

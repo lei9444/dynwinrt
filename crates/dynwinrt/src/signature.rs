@@ -160,17 +160,13 @@ impl Method {
                 let mut out = param.typ.default_winrt_value();
                 let hr = call::call_winrt_method_1(self.info.index, obj, out.out_ptr());
                 hr.ok()?;
-                // For async types, the default value is Object(null) which got filled with
-                // the async COM pointer. Convert to WinRTValue::Async via from_out.
-                if param.typ.is_async() {
-                    let old = std::mem::replace(&mut out, WinRTValue::I32(0));
-                    if let WinRTValue::Object(o) = old {
-                        let ptr = o.as_raw();
-                        std::mem::forget(o); // Transfer ownership to from_out
-                        out = param.typ.from_out(ptr)
-                            .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e)))?;
-                    }
+                // COM pointer types use RawPtr(null) as buffer to avoid IUnknown::from_raw(null) UB.
+                // After COM writes the pointer, convert via from_out.
+                if let WinRTValue::RawPtr(raw_ptr) = out {
+                    out = param.typ.from_out(raw_ptr)
+                        .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e)))?;
                 }
+                out.sanitize_null_object();
                 Ok(vec![out])
             }
             CallStrategy::Direct1In0Out => {
@@ -185,12 +181,11 @@ impl Method {
                 let mut out = out_param.typ.default_winrt_value();
                 let hr = call::call_1in_1out(self.info.index, obj, &args[0], out.out_ptr());
                 hr.ok()?;
-                if out_param.typ.is_async() {
-                    if let WinRTValue::Object(ref o) = out {
-                        out = out_param.typ.from_out(o.as_raw())
-                            .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e)))?;
-                    }
+                if let WinRTValue::RawPtr(raw_ptr) = out {
+                    out = out_param.typ.from_out(raw_ptr)
+                        .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e)))?;
                 }
+                out.sanitize_null_object();
                 Ok(vec![out])
             }
             CallStrategy::Libffi(cif) => {
