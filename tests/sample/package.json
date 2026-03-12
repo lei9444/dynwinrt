@@ -1,0 +1,6 @@
+{
+  "private": true,
+  "dependencies": {
+    "dynwinrt-js": "file:./dynwinrt-js"
+  }
+}
