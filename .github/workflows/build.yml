@@ -88,6 +88,7 @@ jobs:
       - name: Copy test files
         run: |
           cp tests/sample/package.json sample/
+          cp tests/sample/test_uri.ts sample/
           cp tests/sample/test_picker.ts sample/
           cp tests/sample/README.md sample/
 

@@ -8,6 +8,7 @@
   - `bindings/py/pyproject.toml` missing `authors`, `license`, `homepage`
 - [ ] **CI/CD**: No GitHub Actions; add `.github/workflows/test.yml` (cargo test + npm test + pytest)
 - [ ] **Remove debug eprintln**: `meta.rs` has `[resolve]` debug prints that should be removed before release
+- [ ] **Auto-detect WinAppSDK Bootstrap DLL**: `initWinappsdk(major, minor)` should auto-find Bootstrap DLL from `~/.winapp/packages/` or known install paths, with `WINAPPSDK_BOOTSTRAP_DLL_PATH` as override. Currently requires manual env var setup which is a friction point for unpackaged app developers.
 
 ## P1 - Quality
 
@@ -27,8 +28,9 @@
   - Needs: Rust-side COM vtable implementation + napi ThreadsafeFunction callback
   - Blocks: event subscription (IObservableVector.VectorChanged, etc.), all methods accepting delegate parameters
 - [ ] **Struct auto-marshaling**: Users must manually `DynWinRtStruct.create()` + `setF64(index, value)` per field; support auto-conversion from JS objects
-- [ ] **IAsyncOperationWithProgress IID computation**: Named struct signature issue (anonymous structs + lost Parameterized types -> wrong IID -> QI fails)
-  - Needs: `StructEntry.name: Option<String>`, `enum(Name;i4)` signature, preserve Parameterized in struct fields
+- [ ] **IAsyncOperationWithProgress IID computation**: Struct fields containing enums produce `i4` instead of `enum(Name;i4)` in type signature → wrong IID → QI fails
+  - Root cause: enum fields in struct signature not using named format
+  - Also: `StructEntry.name` uses `Option<String>` but WinRT structs are always named — should be `String`, deprecate `define_struct` in favor of `define_named_struct`
 - [ ] **Nullable / IReference\<T\> return handling**: Null COM pointer returns `Null` variant; JS side needs better null-check patterns
 - [ ] **Struct codegen deduplication**: `DynWinRtType.registerStruct(...)` is inlined in every method signature that uses the struct; should generate a shared struct definition file and import it (runtime is idempotent, but codegen is verbose)
 - [ ] **Exclusive interface codegen**: Methods on exclusive interfaces (e.g. `IXmlDocumentIO.LoadXml`) are not generated; need to resolve all interfaces a class implements, not just the default one
