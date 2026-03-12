@@ -72,9 +72,15 @@ pub enum WinRTValue {
     F32(f32),
     F64(f64),
     Object(IUnknown),
+    /// Null COM object pointer. Separate from Object because IUnknown::from_raw(null)
+    /// crashes on clone/drop (dereferences null vtable pointer).
+    Null,
     HString(windows_core::HSTRING),
     HResult(windows_core::HRESULT),
     Guid(windows_core::GUID),
+    /// Raw pointer buffer for COM out-parameters. Avoids IUnknown::from_raw(null) UB.
+    /// COM writes a valid pointer into this slot; after the call, from_out() wraps it.
+    RawPtr(*mut std::ffi::c_void),
     OutValue(*mut std::ffi::c_void, TypeHandle),
     Async(AsyncInfo),
     ArrayOfIUnknown(ArrayOfIUnknownData),
@@ -117,9 +123,33 @@ impl WinRTValue {
 
     pub fn as_object(&self) -> Option<IUnknown> {
         match self {
-            WinRTValue::Object(obj) => Some(obj.clone()),
+            WinRTValue::Object(obj) => {
+                if obj.as_raw().is_null() {
+                    None
+                } else {
+                    Some(obj.clone())
+                }
+            }
             WinRTValue::Async(a) => Some(a.info.cast().ok()?),
             _ => None,
+        }
+    }
+
+    /// Returns true if this value is a null COM object pointer.
+    pub fn is_null_object(&self) -> bool {
+        matches!(self, WinRTValue::Null)
+    }
+
+    /// If this is an Object wrapping a null IUnknown, replace with Null to prevent
+    /// crash on clone/drop (IUnknown::from_raw(null) is invalid).
+    pub fn sanitize_null_object(&mut self) {
+        let is_null = matches!(self, WinRTValue::Object(o) if o.as_raw().is_null());
+        if is_null {
+            // mem::forget the null IUnknown to prevent Drop from calling Release on null
+            let old = std::mem::replace(self, WinRTValue::Null);
+            if let WinRTValue::Object(o) = old {
+                std::mem::forget(o);
+            }
         }
     }
 
@@ -147,7 +177,7 @@ impl WinRTValue {
             WinRTValue::U64(_) => TypeKind::U64,
             WinRTValue::F32(_) => TypeKind::F32,
             WinRTValue::F64(_) => TypeKind::F64,
-            WinRTValue::Object(_) => TypeKind::Object,
+            WinRTValue::Object(_) | WinRTValue::Null | WinRTValue::RawPtr(_) => TypeKind::Object,
             WinRTValue::HString(_) => TypeKind::HString,
             WinRTValue::HResult(_) => TypeKind::HResult,
             WinRTValue::Guid(_) => TypeKind::Guid,
@@ -176,8 +206,10 @@ impl WinRTValue {
             WinRTValue::Object(o) => o as *mut IUnknown as _,
             WinRTValue::HResult(hr) => hr as *mut windows_core::HRESULT as _,
             WinRTValue::Guid(g) => g as *mut windows_core::GUID as _,
+            WinRTValue::RawPtr(p) => p as *mut *mut std::ffi::c_void as *mut std::ffi::c_void,
             WinRTValue::OutValue(ptr, _) => *ptr,
             WinRTValue::ArrayOfIUnknown(data) => data.0.as_ptr() as *mut std::ffi::c_void,
+            WinRTValue::Null => panic!("Cannot get out_ptr for Null value"),
             WinRTValue::Async(_) => panic!("Cannot get out_ptr for async value"),
             WinRTValue::Struct(data) => data.as_mut_ptr() as *mut std::ffi::c_void,
             WinRTValue::Array(_) => panic!("Cannot get out_ptr for Array; arrays expand to two ABI parameters"),
@@ -202,7 +234,9 @@ impl WinRTValue {
             WinRTValue::HString(hstr) => arg(hstr),
             WinRTValue::HResult(hr) => arg(hr),
             WinRTValue::Guid(g) => arg(g),
+            WinRTValue::RawPtr(p) => arg(p),
             WinRTValue::OutValue(p, _) => arg(p),
+            WinRTValue::Null => panic!("Cannot pass Null as libffi arg"),
             WinRTValue::Async(_) => panic!("Cannot pass async value as libffi arg"),
             WinRTValue::ArrayOfIUnknown(data) => arg(&data.0),
             WinRTValue::Struct(data) => unsafe { arg(&*data.as_ptr()) },

@@ -58,6 +58,16 @@ fn main() {
                 std::process::exit(1);
             }
 
+            // Auto-detect Windows SDK Windows.winmd and append if not already included
+            let winmd = if winmd.contains("Windows.winmd") {
+                winmd
+            } else if let Some(sdk_winmd) = find_windows_sdk_winmd() {
+                eprintln!("Auto-detected Windows SDK: {}", sdk_winmd);
+                format!("{};{}", winmd, sdk_winmd)
+            } else {
+                winmd
+            };
+
             let output_dir = Path::new(&output);
             fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
@@ -164,4 +174,30 @@ fn main() {
             );
         }
     }
+}
+
+/// Find Windows SDK Windows.winmd by scanning the standard install location.
+/// Returns the path to the latest version's Windows.winmd, if found.
+fn find_windows_sdk_winmd() -> Option<String> {
+    let base = Path::new(r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata");
+    if !base.exists() {
+        return None;
+    }
+    // Find all version directories and pick the latest (lexicographic sort works for version strings)
+    let mut versions: Vec<_> = fs::read_dir(base)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with("10.")) // Only version directories like "10.0.26100.0"
+        .collect();
+    versions.sort();
+    // Check from latest to oldest
+    for version in versions.iter().rev() {
+        let winmd_path = base.join(version).join("Windows.winmd");
+        if winmd_path.exists() {
+            return Some(winmd_path.to_string_lossy().to_string());
+        }
+    }
+    None
 }
