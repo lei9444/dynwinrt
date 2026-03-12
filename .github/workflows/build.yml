@@ -66,3 +66,32 @@ jobs:
             bindings/js/dist/dynwinrt-js.win32-arm64-msvc.node
             bindings/js/dist/index.js
             bindings/js/dist/index.d.ts
+
+  # Sample: ready-to-use test kit
+  sample:
+    runs-on: ubuntu-latest
+    needs: [winrt-meta-x64, dynwinrt-js]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download build artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: winrt-meta-x64
+          path: sample
+      - uses: actions/download-artifact@v4
+        with:
+          name: dynwinrt-js
+          path: sample/dynwinrt-js
+
+      # Copy test files from repo
+      - name: Copy test files
+        run: |
+          cp tests/sample/package.json sample/
+          cp tests/sample/test_picker.ts sample/
+          cp tests/sample/README.md sample/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sample
+          path: sample/
