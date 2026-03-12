@@ -21,8 +21,9 @@ enum Commands {
     /// Generate TypeScript or Python bindings from .winmd files
     Generate {
         /// Path(s) to .winmd metadata files, separated by ';'
+        /// If omitted, auto-detects Windows.winmd from Windows SDK install path.
         #[arg(long)]
-        winmd: String,
+        winmd: Option<String>,
 
         /// Filter by namespace (e.g. "Windows.Foundation")
         #[arg(long)]
@@ -58,14 +59,28 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Auto-detect Windows SDK Windows.winmd and append if not already included
-            let winmd = if winmd.contains("Windows.winmd") {
-                winmd
-            } else if let Some(sdk_winmd) = find_windows_sdk_winmd() {
-                eprintln!("Auto-detected Windows SDK: {}", sdk_winmd);
-                format!("{};{}", winmd, sdk_winmd)
-            } else {
-                winmd
+            // Resolve winmd path: use provided value or auto-detect Windows SDK
+            let winmd = match winmd {
+                Some(w) => {
+                    if w.contains("Windows.winmd") {
+                        w
+                    } else if let Some(sdk_winmd) = find_windows_sdk_winmd() {
+                        eprintln!("Auto-detected Windows SDK: {}", sdk_winmd);
+                        format!("{};{}", w, sdk_winmd)
+                    } else {
+                        w
+                    }
+                }
+                None => match find_windows_sdk_winmd() {
+                    Some(path) => {
+                        eprintln!("Auto-detected Windows SDK: {}", path);
+                        path
+                    }
+                    None => {
+                        eprintln!("Could not auto-detect Windows.winmd. Please provide --winmd.");
+                        std::process::exit(1);
+                    }
+                },
             };
 
             let output_dir = Path::new(&output);
