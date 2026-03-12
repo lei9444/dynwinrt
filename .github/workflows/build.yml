@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+    branches: [main, leilzh/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Build winrt-meta codegen tool
+  winrt-meta:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build winrt-meta
+        run: cargo build -p winrt-meta --release
+      - name: Upload winrt-meta.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: winrt-meta-win64
+          path: target/release/winrt-meta.exe
+
+  # Build dynwinrt-js native binding
+  dynwinrt-js:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        working-directory: bindings/js
+        run: npm install
+      - name: Build native binding
+        working-directory: bindings/js
+        run: npx napi build --no-const-enum --platform --release -o dist
+      - name: Upload dynwinrt-js dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dynwinrt-js-win64
+          path: |
+            bindings/js/dist/dynwinrt-js.win32-x64-msvc.node
+            bindings/js/dist/index.js
+            bindings/js/dist/index.d.ts
