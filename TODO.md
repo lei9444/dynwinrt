@@ -30,6 +30,8 @@
 - [ ] **IAsyncOperationWithProgress IID computation**: Named struct signature issue (anonymous structs + lost Parameterized types -> wrong IID -> QI fails)
   - Needs: `StructEntry.name: Option<String>`, `enum(Name;i4)` signature, preserve Parameterized in struct fields
 - [ ] **Nullable / IReference\<T\> return handling**: Null COM pointer returns `Null` variant; JS side needs better null-check patterns
+- [ ] **Struct codegen deduplication**: `DynWinRtType.registerStruct(...)` is inlined in every method signature that uses the struct; should generate a shared struct definition file and import it (runtime is idempotent, but codegen is verbose)
+- [ ] **Exclusive interface codegen**: Methods on exclusive interfaces (e.g. `IXmlDocumentIO.LoadXml`) are not generated; need to resolve all interfaces a class implements, not just the default one
 
 ## P3 - Developer Experience
 

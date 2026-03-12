@@ -148,13 +148,7 @@ fn main() {
                 println!("Generated {}", filepath.display());
             }
 
-            // Generate _collections.ts if any parameterized types are used
-            if typescript::uses_collections(&all_classes, &all_interfaces) {
-                let collections_code = typescript::generate_collections();
-                let collections_path = output_dir.join("_collections.ts");
-                fs::write(&collections_path, &collections_code).expect("Failed to write _collections.ts");
-                println!("Generated {}", collections_path.display());
-            }
+
 
             // Generate index.ts
             let total = all_classes.len() + all_interfaces.len() + all_enums.len();

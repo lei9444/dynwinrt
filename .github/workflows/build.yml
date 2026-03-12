@@ -20,7 +20,7 @@ jobs:
         run: cargo build -p winrt-meta --release
       - uses: actions/upload-artifact@v4
         with:
-          name: winrt-meta-win-x64
+          name: winrt-meta-x64
           path: target/release/winrt-meta.exe
 
   # winrt-meta arm64
@@ -35,34 +35,11 @@ jobs:
         run: cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
         with:
-          name: winrt-meta-win-arm64
+          name: winrt-meta-arm64
           path: target/aarch64-pc-windows-msvc/release/winrt-meta.exe
 
-  # dynwinrt-js x64
-  dynwinrt-js-x64:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Install dependencies
-        working-directory: bindings/js
-        run: npm install
-      - name: Build
-        working-directory: bindings/js
-        run: npx napi build --no-const-enum --platform --release -o dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dynwinrt-js-win-x64
-          path: |
-            bindings/js/dist/dynwinrt-js.win32-x64-msvc.node
-            bindings/js/dist/index.js
-            bindings/js/dist/index.d.ts
-
-  # dynwinrt-js arm64
-  dynwinrt-js-arm64:
+  # dynwinrt-js (x64 + arm64 in one job)
+  dynwinrt-js:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,10 +52,17 @@ jobs:
       - name: Install dependencies
         working-directory: bindings/js
         run: npm install
-      - name: Build
+      - name: Build x64
+        working-directory: bindings/js
+        run: npx napi build --no-const-enum --platform --release -o dist
+      - name: Build arm64
         working-directory: bindings/js
         run: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
       - uses: actions/upload-artifact@v4
         with:
-          name: dynwinrt-js-win-arm64
-          path: bindings/js/dist/dynwinrt-js.win32-arm64-msvc.node
+          name: dynwinrt-js
+          path: |
+            bindings/js/dist/dynwinrt-js.win32-x64-msvc.node
+            bindings/js/dist/dynwinrt-js.win32-arm64-msvc.node
+            bindings/js/dist/index.js
+            bindings/js/dist/index.d.ts
