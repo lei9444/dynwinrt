@@ -5,43 +5,35 @@ use crate::metadata_table::{TypeHandle, TypeKind};
 use crate::value::WinRTValue;
 
 
-/// How the backing buffer was allocated — determines deallocation strategy.
+/// How the array data is stored.
 enum ArrayBuffer {
+    /// User-built array (for PassArray). Elements are owned WinRTValues.
+    /// Serialized to raw bytes only at FFI call time.
+    Values(Vec<WinRTValue>),
+    /// WinRT-allocated buffer (ReceiveArray / FillArray).
     /// Owns the buffer AND the element references.
-    /// Used for ReceiveArray (callee-allocated) and FillArray (caller-allocated via CoTaskMemAlloc).
     /// Drop releases non-blittable elements, then CoTaskMemFree.
-    CoTaskMem(*mut c_void),
-    /// Borrowed view for PassArray — buffer owns the bytes but NOT the element references.
-    /// Drop frees the Vec but does NOT Release/DeleteString elements.
-    /// The original WinRTValues retain ownership of the references.
-    Borrowed(Vec<u8>),
-}
-
-impl ArrayBuffer {
-    /// Whether this buffer owns the element references (needs per-element cleanup on drop).
-    fn owns_elements(&self) -> bool {
-        matches!(self, ArrayBuffer::CoTaskMem(_))
-    }
+    CoTaskMem { ptr: *mut c_void, len: usize },
 }
 
 impl std::fmt::Debug for ArrayBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ArrayBuffer::CoTaskMem(p) => write!(f, "CoTaskMem({:p})", p),
-            ArrayBuffer::Borrowed(v) => write!(f, "Borrowed({} bytes)", v.len()),
+            ArrayBuffer::Values(v) => write!(f, "Values({} elements)", v.len()),
+            ArrayBuffer::CoTaskMem { ptr, len } => write!(f, "CoTaskMem({:p}, {} elements)", ptr, len),
         }
     }
 }
 
-/// Holds a dynamically-typed WinRT array backed by a raw byte buffer.
+/// Holds a dynamically-typed WinRT array.
 ///
-/// For blittable types, elements can be read as zero-copy slices via `as_slice::<T>()`.
-/// For non-blittable types (HString, Object), individual element access returns cloned values.
-/// Drop handles releasing non-blittable elements (Release / WindowsDeleteString) before
-/// freeing the buffer itself.
+/// Two representations:
+/// - `Values`: owned `Vec<WinRTValue>`, used for arrays the caller builds (PassArray).
+///   Clone/Drop delegate to WinRTValue which handles refcounting automatically.
+/// - `CoTaskMem`: raw byte buffer from WinRT (ReceiveArray/FillArray).
+///   Clone/Drop manually handle per-element refcounting on raw bytes.
 pub struct ArrayData {
     pub element_type: TypeHandle,
-    len: usize,
     buffer: ArrayBuffer,
 }
 
@@ -49,7 +41,6 @@ impl std::fmt::Debug for ArrayData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ArrayData")
             .field("element_type", &self.element_type)
-            .field("len", &self.len)
             .field("buffer", &self.buffer)
             .finish()
     }
@@ -59,22 +50,16 @@ impl ArrayData {
     pub fn empty(element_type: TypeHandle) -> Self {
         ArrayData {
             element_type,
-            len: 0,
-            buffer: ArrayBuffer::CoTaskMem(std::ptr::null_mut()),
+            buffer: ArrayBuffer::CoTaskMem { ptr: std::ptr::null_mut(), len: 0 },
         }
     }
 
-    /// Create an ArrayData by serializing WinRTValues into a contiguous buffer.
-    /// Used for PassArray in-params.
-    ///
-    /// The buffer borrows element references (no AddRef/Duplicate).
-    /// The caller's WinRTValues retain ownership — they must outlive this ArrayData.
+    /// Create an ArrayData from owned WinRTValues.
+    /// Used for PassArray in-params. The values are cloned and owned by this ArrayData.
     pub fn from_values(element_type: TypeHandle, values: &[WinRTValue]) -> Self {
-        let buffer = serialize_to_buffer(&element_type, values);
         ArrayData {
-            len: values.len(),
             element_type,
-            buffer: ArrayBuffer::Borrowed(buffer),
+            buffer: ArrayBuffer::Values(values.to_vec()),
         }
     }
 
@@ -87,41 +72,43 @@ impl ArrayData {
     ) -> Self {
         ArrayData {
             element_type,
-            len,
-            buffer: ArrayBuffer::CoTaskMem(data_ptr),
+            buffer: ArrayBuffer::CoTaskMem { ptr: data_ptr, len },
         }
     }
 
     pub fn len(&self) -> usize {
-        self.len
-    }
-
-    fn data_ptr(&self) -> *const u8 {
         match &self.buffer {
-            ArrayBuffer::Borrowed(v) => v.as_ptr(),
-            ArrayBuffer::CoTaskMem(p) => *p as *const u8,
+            ArrayBuffer::Values(v) => v.len(),
+            ArrayBuffer::CoTaskMem { len, .. } => *len,
         }
     }
 
     // ------------------------------------------------------------------
-    // Blittable element access — zero-copy slice
+    // Blittable element access — zero-copy slice (CoTaskMem only)
     // ------------------------------------------------------------------
 
-    /// Return the raw buffer as a typed slice. Only valid for blittable types
-    /// where `size_of::<T>() == element_type.element_size()`.
+    /// Return the raw buffer as a typed slice. Only valid for CoTaskMem-backed arrays
+    /// with blittable types where `size_of::<T>() == element_type.element_size()`.
     ///
     /// # Safety
     /// Caller must ensure T matches the actual element layout.
     pub unsafe fn as_typed_slice<T: Copy>(&self) -> &[T] {
-        assert_eq!(
-            std::mem::size_of::<T>(),
-            self.element_type.element_size(),
-            "as_typed_slice<T> size mismatch"
-        );
-        if self.len == 0 {
-            return &[];
+        match &self.buffer {
+            ArrayBuffer::CoTaskMem { ptr, len } => {
+                assert_eq!(
+                    std::mem::size_of::<T>(),
+                    self.element_type.element_size(),
+                    "as_typed_slice<T> size mismatch"
+                );
+                if *len == 0 {
+                    return &[];
+                }
+                unsafe { std::slice::from_raw_parts(*ptr as *const T, *len) }
+            }
+            ArrayBuffer::Values(_) => {
+                panic!("as_typed_slice not available for Values arrays; use get() instead")
+            }
         }
-        unsafe { std::slice::from_raw_parts(self.data_ptr() as *const T, self.len) }
     }
 
     // ------------------------------------------------------------------
@@ -129,11 +116,21 @@ impl ArrayData {
     // ------------------------------------------------------------------
 
     /// Read element at `index` as a WinRTValue.
-    /// For non-blittable types this clones (AddRef / DuplicateString).
+    /// For Values arrays, returns a clone of the stored value.
+    /// For CoTaskMem arrays, reads from raw bytes (AddRef / DuplicateString as needed).
     pub fn get(&self, index: usize) -> WinRTValue {
-        assert!(index < self.len, "ArrayData::get index {} out of bounds (len {})", index, self.len);
+        assert!(index < self.len(), "ArrayData::get index {} out of bounds (len {})", index, self.len());
+        match &self.buffer {
+            ArrayBuffer::Values(v) => v[index].clone(),
+            ArrayBuffer::CoTaskMem { ptr, .. } => {
+                self.get_from_raw(index, *ptr as *const u8)
+            }
+        }
+    }
+
+    /// Read element from a raw byte buffer (CoTaskMem path).
+    fn get_from_raw(&self, index: usize, base: *const u8) -> WinRTValue {
         let elem_size = self.element_type.element_size();
-        let base = self.data_ptr();
         unsafe {
             match self.element_type.kind() {
                 TypeKind::Bool => {
@@ -209,13 +206,36 @@ impl ArrayData {
     // ------------------------------------------------------------------
 
     pub fn get_i32(&self, index: usize) -> i32 {
-        assert!(index < self.len);
-        unsafe { *(self.data_ptr().add(index * 4) as *const i32) }
+        match &self.buffer {
+            ArrayBuffer::Values(v) => v[index].as_i32().unwrap(),
+            ArrayBuffer::CoTaskMem { ptr, len } => {
+                assert!(index < *len);
+                unsafe { *((*ptr as *const u8).add(index * 4) as *const i32) }
+            }
+        }
     }
 
-    /// Return the raw buffer pointer and length for passing to WinRT ABI (PassArray).
-    pub(crate) fn as_raw_parts(&self) -> (*const u8, usize) {
-        (self.data_ptr(), self.len)
+    // ------------------------------------------------------------------
+    // ABI serialization (for PassArray FFI calls)
+    // ------------------------------------------------------------------
+
+    /// Serialize elements to a contiguous byte buffer for PassArray ABI.
+    /// Returns an owned Vec<u8> that must be kept alive for the duration of the FFI call.
+    pub(crate) fn serialize_for_abi(&self) -> Vec<u8> {
+        match &self.buffer {
+            ArrayBuffer::Values(values) => serialize_to_buffer(&self.element_type, values),
+            ArrayBuffer::CoTaskMem { ptr, len } => {
+                let elem_size = self.element_type.element_size();
+                let total = *len * elem_size;
+                let mut buf = vec![0u8; total];
+                if total > 0 {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(*ptr as *const u8, buf.as_mut_ptr(), total);
+                    }
+                }
+                buf
+            }
+        }
     }
 }
 
@@ -225,147 +245,126 @@ impl ArrayData {
 
 impl Drop for ArrayData {
     fn drop(&mut self) {
-        // Swap out to prevent double-free if element destructor panics
-        let mut buffer = ArrayBuffer::CoTaskMem(std::ptr::null_mut());
-        let mut len = 0usize;
-        std::mem::swap(&mut buffer, &mut self.buffer);
-        std::mem::swap(&mut len, &mut self.len);
+        // Values: Vec<WinRTValue> drops automatically, WinRTValue handles Release/DeleteString.
+        // We only need manual cleanup for CoTaskMem.
+        let buffer = std::mem::replace(
+            &mut self.buffer,
+            ArrayBuffer::CoTaskMem { ptr: std::ptr::null_mut(), len: 0 },
+        );
 
-        if len > 0 && buffer.owns_elements() {
-            let base = match &buffer {
-                ArrayBuffer::CoTaskMem(p) => *p as *const u8,
-                ArrayBuffer::Borrowed(v) => v.as_ptr(),
-            };
-            let elem_size = self.element_type.element_size();
-            let kind = self.element_type.kind();
+        if let ArrayBuffer::CoTaskMem { ptr, len } = buffer {
+            if len > 0 && !ptr.is_null() {
+                let base = ptr as *const u8;
+                let elem_size = self.element_type.element_size();
+                let kind = self.element_type.kind();
 
-            // Release non-blittable elements
-            match kind {
-                TypeKind::HString => {
-                    for i in 0..len {
-                        unsafe {
-                            let raw = *(base.add(i * elem_size) as *const *mut c_void);
-                            if !raw.is_null() {
-                                // WindowsDeleteString by transmuting to HSTRING and dropping
-                                let _hstr: windows_core::HSTRING = std::mem::transmute(raw);
-                                // _hstr drops here, calling WindowsDeleteString
+                // Release non-blittable elements
+                match kind {
+                    TypeKind::HString => {
+                        for i in 0..len {
+                            unsafe {
+                                let raw = *(base.add(i * elem_size) as *const *mut c_void);
+                                if !raw.is_null() {
+                                    let _hstr: windows_core::HSTRING = std::mem::transmute(raw);
+                                }
                             }
                         }
                     }
-                }
-                kind if kind.is_com_pointer() => {
-                    for i in 0..len {
-                        unsafe {
-                            let raw = *(base.add(i * elem_size) as *const *mut c_void);
-                            if !raw.is_null() {
-                                // from_raw takes ownership → drop calls Release
-                                let _obj = IUnknown::from_raw(raw);
+                    kind if kind.is_com_pointer() => {
+                        for i in 0..len {
+                            unsafe {
+                                let raw = *(base.add(i * elem_size) as *const *mut c_void);
+                                if !raw.is_null() {
+                                    let _obj = IUnknown::from_raw(raw);
+                                }
                             }
                         }
                     }
-                }
-                _ => {
-                    // Blittable types (including Struct): no per-element cleanup needed
+                    _ => {}
                 }
             }
-        }
 
-        // Free the buffer
-        match buffer {
-            ArrayBuffer::Borrowed(_) => {
-                // Vec drops naturally
-            }
-            ArrayBuffer::CoTaskMem(ptr) => {
-                if !ptr.is_null() {
-                    unsafe {
-                        windows::Win32::System::Com::CoTaskMemFree(Some(ptr));
-                    }
+            if !ptr.is_null() {
+                unsafe {
+                    windows::Win32::System::Com::CoTaskMemFree(Some(ptr));
                 }
             }
         }
+        // ArrayBuffer::Values is dropped automatically here
     }
 }
 
 // ======================================================================
-// Clone — deep copy with AddRef/DuplicateString for non-blittable
+// Clone
 // ======================================================================
 
 impl Clone for ArrayData {
     fn clone(&self) -> Self {
-        if self.len == 0 {
-            return ArrayData::empty(self.element_type.clone());
-        }
-
-        let elem_size = self.element_type.element_size();
-        let total_bytes = self.len * elem_size;
-        let base = self.data_ptr();
-
-        // Borrowed buffer: raw memcpy, stays Borrowed (no ownership to duplicate).
-        if !self.buffer.owns_elements() {
-            let mut buf = vec![0u8; total_bytes];
-            unsafe { std::ptr::copy_nonoverlapping(base, buf.as_mut_ptr(), total_bytes) };
-            return ArrayData {
+        match &self.buffer {
+            ArrayBuffer::Values(v) => ArrayData {
                 element_type: self.element_type.clone(),
-                len: self.len,
-                buffer: ArrayBuffer::Borrowed(buf),
-            };
-        }
+                buffer: ArrayBuffer::Values(v.clone()),
+            },
+            ArrayBuffer::CoTaskMem { ptr, len } => {
+                if *len == 0 || ptr.is_null() {
+                    return ArrayData::empty(self.element_type.clone());
+                }
 
-        // CoTaskMem: must AddRef/Duplicate non-blittable elements.
-        // Allocate new CoTaskMem buffer for the clone.
-        let new_ptr = unsafe {
-            windows::Win32::System::Com::CoTaskMemAlloc(total_bytes)
-        };
-        assert!(!new_ptr.is_null(), "CoTaskMemAlloc failed in ArrayData::clone");
-        let new_buf = new_ptr as *mut u8;
+                let elem_size = self.element_type.element_size();
+                let total_bytes = *len * elem_size;
+                let base = *ptr as *const u8;
 
-        let kind = self.element_type.kind();
-        match kind {
-            TypeKind::HString => {
-                unsafe { std::ptr::write_bytes(new_buf, 0, total_bytes) };
-                for i in 0..self.len {
-                    unsafe {
-                        let raw = *(base.add(i * elem_size) as *const *mut c_void);
-                        if !raw.is_null() {
-                            let hstr: &windows_core::HSTRING = &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
-                            let cloned: *mut c_void = std::mem::transmute(hstr.clone());
-                            (new_buf.add(i * elem_size) as *mut *mut c_void).write(cloned);
+                let new_ptr = unsafe {
+                    windows::Win32::System::Com::CoTaskMemAlloc(total_bytes)
+                };
+                assert!(!new_ptr.is_null(), "CoTaskMemAlloc failed in ArrayData::clone");
+                let new_buf = new_ptr as *mut u8;
+
+                let kind = self.element_type.kind();
+                match kind {
+                    TypeKind::HString => {
+                        unsafe { std::ptr::write_bytes(new_buf, 0, total_bytes) };
+                        for i in 0..*len {
+                            unsafe {
+                                let raw = *(base.add(i * elem_size) as *const *mut c_void);
+                                if !raw.is_null() {
+                                    let hstr: &windows_core::HSTRING = &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
+                                    let cloned: *mut c_void = std::mem::transmute(hstr.clone());
+                                    (new_buf.add(i * elem_size) as *mut *mut c_void).write(cloned);
+                                }
+                            }
                         }
                     }
-                }
-            }
-            kind if kind.is_com_pointer() => {
-                unsafe { std::ptr::write_bytes(new_buf, 0, total_bytes) };
-                for i in 0..self.len {
-                    unsafe {
-                        let raw = *(base.add(i * elem_size) as *const *mut c_void);
-                        if !raw.is_null() {
-                            let obj = IUnknown::from_raw_borrowed(&raw).unwrap().clone();
-                            (new_buf.add(i * elem_size) as *mut *mut c_void).write(obj.into_raw());
+                    kind if kind.is_com_pointer() => {
+                        unsafe { std::ptr::write_bytes(new_buf, 0, total_bytes) };
+                        for i in 0..*len {
+                            unsafe {
+                                let raw = *(base.add(i * elem_size) as *const *mut c_void);
+                                if !raw.is_null() {
+                                    let obj = IUnknown::from_raw_borrowed(&raw).unwrap().clone();
+                                    (new_buf.add(i * elem_size) as *mut *mut c_void).write(obj.into_raw());
+                                }
+                            }
                         }
                     }
+                    _ => {
+                        unsafe { std::ptr::copy_nonoverlapping(base, new_buf, total_bytes) };
+                    }
+                }
+
+                ArrayData {
+                    element_type: self.element_type.clone(),
+                    buffer: ArrayBuffer::CoTaskMem { ptr: new_ptr, len: *len },
                 }
             }
-            _ => {
-                // Blittable (primitives, Guid, Struct): plain memcpy
-                unsafe { std::ptr::copy_nonoverlapping(base, new_buf, total_bytes) };
-            }
-        }
-
-        ArrayData {
-            element_type: self.element_type.clone(),
-            len: self.len,
-            buffer: ArrayBuffer::CoTaskMem(new_ptr),
         }
     }
 }
 
 // ======================================================================
-// Serialization — used for PassArray (in-params from WinRTValue)
+// Serialization — WinRTValue → raw bytes for PassArray ABI
 // ======================================================================
 
-/// Serialize WinRTValue elements into a contiguous byte buffer for PassArray ABI.
-/// This is also used by `ArrayData::from_values`.
 fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<u8> {
     let elem_size = element_type.element_size();
     let mut buffer = Vec::with_capacity(values.len() * elem_size);
@@ -402,12 +401,6 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
         }
     }
     buffer
-}
-
-/// Serialize array elements for the PassArray ABI pattern.
-/// Returns a byte buffer that must outlive the FFI call.
-pub(crate) fn serialize_array_elements(data: &ArrayData) -> (*const u8, usize) {
-    data.as_raw_parts()
 }
 
 #[cfg(test)]

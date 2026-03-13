@@ -266,6 +266,11 @@ impl DynWinRTMethodSig {
     fn add_out(&self, typ: &DynWinRTType) -> DynWinRTMethodSig {
         DynWinRTMethodSig(self.0.clone().add_out(typ.0.clone()))
     }
+
+    /// Add a FillArray [out] parameter. Returns new sig for chaining.
+    fn add_out_fill(&self, typ: &DynWinRTType) -> DynWinRTMethodSig {
+        DynWinRTMethodSig(self.0.clone().add_out_fill(typ.0.clone()))
+    }
 }
 
 // ======================================================================

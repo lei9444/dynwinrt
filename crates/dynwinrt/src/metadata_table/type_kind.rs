@@ -93,7 +93,6 @@ pub enum TypeKind {
     // Composite
     Struct(u32),                       // idx → structs
     Array(u32),                        // idx → inner_types
-    FillArray(u32),                    // idx → inner_types
 }
 
 impl TypeKind {

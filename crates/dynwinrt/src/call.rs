@@ -6,9 +6,6 @@ use crate::{abi::AbiValue, signature::Parameter, value::WinRTValue};
 
 pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_void {
     unsafe {
-        // a function pointer is *const c_void (void* in C)
-        // a vtable is a array of function pointers: *const *const c_void (void** in C)
-        // a COM object pointer is a pointer to vtable: *const *const *const c_void (void*** in C)
         let vtable_ptr = *(obj as *const *const *mut c_void);
         *vtable_ptr.add(method_index)
     }
@@ -46,64 +43,66 @@ pub fn call_winrt_method_2<T1, T2>(
     }
 }
 
-/// Direct call for 1-in + 0-out (setter). Dispatches by value type.
-pub fn call_1in(
-    vtable_index: usize,
-    obj: *mut c_void,
-    in_val: &WinRTValue,
-) -> HRESULT {
-    match in_val {
-        WinRTValue::Bool(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::I8(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::U8(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::I16(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::U16(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::I32(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::U32(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::I64(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::U64(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::F32(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::F64(v) => call_winrt_method_1(vtable_index, obj, *v),
-        WinRTValue::Object(o) => call_winrt_method_1(vtable_index, obj, o.as_raw()),
-        WinRTValue::Null => call_winrt_method_1(vtable_index, obj, std::ptr::null_mut::<c_void>()),
-        WinRTValue::Guid(g) => call_winrt_method_1(vtable_index, obj, *g),
-        _ => panic!("call_1in: unsupported in-param type {:?}", in_val),
-    }
+/// Dispatch a scalar WinRTValue through a closure that receives the raw ABI value.
+/// Used by direct call helpers to avoid repeating the same 14-branch match.
+macro_rules! dispatch_scalar {
+    ($in_val:expr, $call:expr) => {
+        match $in_val {
+            WinRTValue::Bool(v) => $call(*v),
+            WinRTValue::I8(v) => $call(*v),
+            WinRTValue::U8(v) => $call(*v),
+            WinRTValue::I16(v) => $call(*v),
+            WinRTValue::U16(v) => $call(*v),
+            WinRTValue::I32(v) => $call(*v),
+            WinRTValue::U32(v) => $call(*v),
+            WinRTValue::I64(v) => $call(*v),
+            WinRTValue::U64(v) => $call(*v),
+            WinRTValue::F32(v) => $call(*v),
+            WinRTValue::F64(v) => $call(*v),
+            WinRTValue::Object(o) => $call(o.as_raw()),
+            WinRTValue::Null => $call(std::ptr::null_mut::<c_void>()),
+            WinRTValue::Guid(g) => $call(*g),
+            _ => panic!("dispatch_scalar: unsupported type {:?}", $in_val),
+        }
+    };
 }
 
-/// Direct call for 1-in + 1-out. Dispatches by value type.
-pub fn call_1in_1out(
-    vtable_index: usize,
-    obj: *mut c_void,
-    in_val: &WinRTValue,
-    out_ptr: *mut c_void,
-) -> HRESULT {
-    match in_val {
-        WinRTValue::Bool(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::I8(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::U8(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::I16(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::U16(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::I32(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::U32(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::I64(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::U64(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::F32(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::F64(v) => call_winrt_method_2(vtable_index, obj, *v, out_ptr),
-        WinRTValue::Object(o) => call_winrt_method_2(vtable_index, obj, o.as_raw(), out_ptr),
-        WinRTValue::Null => call_winrt_method_2(vtable_index, obj, std::ptr::null_mut::<c_void>(), out_ptr),
-        WinRTValue::Guid(g) => call_winrt_method_2(vtable_index, obj, *g, out_ptr),
-        _ => panic!("call_1in_1out: unsupported in-param type {:?}", in_val),
-    }
+/// Direct call for 1-in + 0-out (setter).
+pub fn call_1in(vtable_index: usize, obj: *mut c_void, in_val: &WinRTValue) -> HRESULT {
+    dispatch_scalar!(in_val, |v| call_winrt_method_1(vtable_index, obj, v))
 }
 
-use crate::array::serialize_array_elements;
+/// Direct call for 1-in + 1-out.
+pub fn call_1in_1out(vtable_index: usize, obj: *mut c_void, in_val: &WinRTValue, out_ptr: *mut c_void) -> HRESULT {
+    dispatch_scalar!(in_val, |v| call_winrt_method_2(vtable_index, obj, v, out_ptr))
+}
+
+/// Direct call for 1 scalar in + FillArray out.
+/// fn(this, val, u32 capacity, *mut u8 items, *mut u32 actual) -> HRESULT
+pub fn call_fill_array_1in(
+    fptr: *mut c_void,
+    obj: *mut c_void,
+    in_val: &WinRTValue,
+    capacity: u32,
+    buffer: *mut u8,
+    actual: *mut u32,
+) -> HRESULT {
+    dispatch_scalar!(in_val, |v| unsafe {
+        let method: unsafe extern "system" fn(
+            *mut c_void, _, u32, *mut u8, *mut u32,
+        ) -> HRESULT = std::mem::transmute(fptr);
+        method(obj, v, capacity, buffer, actual)
+    })
+}
+
 use crate::metadata_table::{TypeHandle, TypeKind};
 
-/// Stable heap storage for array in-param data (must outlive ffi call).
+/// Stable heap storage for array in-param data.
+/// Owns the serialized byte buffer so it stays alive for the FFI call.
 struct ArrayInSlot {
     length: u32,
-    data_ptr: *const u8, // points into the source ArrayData's buffer
+    data_ptr: *const u8,
+    _buffer: Vec<u8>, // keeps serialized bytes alive
 }
 
 /// Stable heap storage for array out-param data (callee writes into these fields).
@@ -117,6 +116,7 @@ struct ArrayOutSlot {
 struct FillArraySlot {
     capacity: u32,
     buffer_ptr: *mut u8, // CoTaskMemAlloc'd
+    actual_count: u32,   // callee writes the actual number of elements filled
     element_type: TypeHandle,
 }
 
@@ -162,13 +162,15 @@ pub fn call_winrt_method_dynamic(
     // FillArray storage: caller-allocated buffers
     let mut fill_array_slots: Vec<Box<FillArraySlot>> = Vec::new();
     let mut fill_array_map: Vec<Option<usize>> = Vec::with_capacity(out_count);
+    // Pre-computed pointers to actual_count fields (must outlive ffi call)
+    let mut fill_array_actual_ptrs: Vec<*mut u32> = Vec::new();
 
     ffi_args.push(arg(&obj));
 
     // Phase 1a: Pre-allocate all out parameters
     for p in parameters {
-        if p.is_out {
-            if p.typ.is_fill_array() {
+        if p.is_out() {
+            if p.is_fill_array() {
                 // FillArray: caller allocates buffer. Use the capacity from args.
                 let array_data = args[p.value_index]
                     .as_array()
@@ -185,10 +187,14 @@ pub fn call_winrt_method_dynamic(
                 let slot = Box::new(FillArraySlot {
                     capacity,
                     buffer_ptr,
+                    actual_count: 0,
                     element_type: elem_type,
                 });
-                fill_array_map.push(Some(fill_array_slots.len()));
+                let slot_idx = fill_array_slots.len();
+                fill_array_map.push(Some(slot_idx));
                 fill_array_slots.push(slot);
+                let slot_ref = &mut *fill_array_slots[slot_idx];
+                fill_array_actual_ptrs.push(&mut slot_ref.actual_count);
                 // Placeholders for index alignment
                 out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
                 out_ptrs.push(std::ptr::null());
@@ -229,14 +235,16 @@ pub fn call_winrt_method_dynamic(
 
     // Phase 1b: Pre-compute all array in-param data (must happen before Phase 2)
     for p in parameters {
-        if !p.is_out && p.typ.is_array() {
+        if !p.is_out() && p.typ.is_array() {
             let array_data = args[p.value_index]
                 .as_array()
                 .expect("Expected WinRTValue::Array for array in-parameter");
-            let (ptr, len) = serialize_array_elements(array_data);
+            let buffer = array_data.serialize_for_abi();
+            let data_ptr = buffer.as_ptr();
             array_in_slots.push(Box::new(ArrayInSlot {
-                length: len as u32,
-                data_ptr: ptr,
+                length: array_data.len() as u32,
+                data_ptr,
+                _buffer: buffer,
             }));
         }
     }
@@ -245,12 +253,13 @@ pub fn call_winrt_method_dynamic(
     let mut array_in_idx = 0usize;
     let mut array_out_idx = 0usize;
     for p in parameters {
-        if p.is_out {
+        if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
-                // FillArray: push TWO args (capacity value, buffer pointer value)
+                // FillArray: push THREE args (capacity, buffer pointer, actual count pointer)
                 let slot = &*fill_array_slots[slot_idx];
                 ffi_args.push(arg(&slot.capacity));
                 ffi_args.push(arg(&slot.buffer_ptr));
+                ffi_args.push(arg(&fill_array_actual_ptrs[slot_idx]));
             } else if array_out_map[p.value_index].is_some() {
                 // ReceiveArray out: push TWO args (pointer-to-length, pointer-to-data_ptr)
                 ffi_args.push(arg(&array_out_len_ptrs[array_out_idx]));
@@ -277,16 +286,17 @@ pub fn call_winrt_method_dynamic(
     // Phase 4: Extract results
     let mut result_values: Vec<WinRTValue> = Vec::with_capacity(out_count);
     for p in parameters {
-        if p.is_out {
+        if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
                 // FillArray: transfer CoTaskMem buffer ownership to ArrayData
+                // Use actual_count (written by callee) as length, not capacity.
                 let slot = &mut fill_array_slots[slot_idx];
-                let capacity = slot.capacity as usize;
+                let actual = slot.actual_count as usize;
                 let ptr = slot.buffer_ptr as *mut c_void;
                 slot.buffer_ptr = std::ptr::null_mut(); // prevent FillArraySlot::drop from freeing
                 result_values.push(WinRTValue::Array(
                     crate::array::ArrayData::from_cotaskmem(
-                        slot.element_type.clone(), ptr, capacity,
+                        slot.element_type.clone(), ptr, actual,
                     )
                 ));
             } else if let Some(slot_idx) = array_out_map[p.value_index] {

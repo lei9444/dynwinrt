@@ -168,11 +168,6 @@ impl MetadataTable {
         self.make(TypeKind::Array(idx))
     }
 
-    pub fn fill_array(self: &Arc<Self>, element_type: &TypeHandle) -> TypeHandle {
-        let idx = self.register_inner_type(element_type.kind);
-        self.make(TypeKind::FillArray(idx))
-    }
-
     pub fn define_struct(self: &Arc<Self>, fields: &[TypeHandle]) -> TypeHandle {
         let field_kinds: Vec<TypeKind> = fields.iter().map(|h| h.kind).collect();
         let (field_offsets, layout) = self.compute_layout(&field_kinds);

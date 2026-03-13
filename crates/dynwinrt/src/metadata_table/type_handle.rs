@@ -158,7 +158,7 @@ impl TypeHandle {
                 panic!("Struct types do not have a simple AbiType; use libffi_type() instead")
             }
 
-            TypeKind::Array(_) | TypeKind::FillArray(_) => {
+            TypeKind::Array(_) => {
                 panic!("Array types expand to multiple ABI parameters; cannot map to single AbiType")
             }
         }
@@ -167,7 +167,7 @@ impl TypeHandle {
     pub fn libffi_type(&self) -> libffi::middle::Type {
         match self.kind {
             TypeKind::Struct(_) => self.table.libffi_type_kind(self.kind),
-            TypeKind::Array(_) | TypeKind::FillArray(_) => {
+            TypeKind::Array(_) => {
                 panic!("Array types expand to multiple libffi types")
             }
             _ => self.abi_type().libffi_type(),
@@ -204,13 +204,9 @@ impl TypeHandle {
         matches!(self.kind, TypeKind::Array(_))
     }
 
-    pub fn is_fill_array(&self) -> bool {
-        matches!(self.kind, TypeKind::FillArray(_))
-    }
-
     pub fn array_element_type(&self) -> TypeHandle {
         match self.kind {
-            TypeKind::Array(idx) | TypeKind::FillArray(idx) => {
+            TypeKind::Array(idx) => {
                 let inner = self.table.get_inner_type(idx);
                 TypeHandle { table: self.table.clone(), kind: inner }
             }
@@ -264,7 +260,7 @@ impl TypeHandle {
 
             TypeKind::Struct(_) => WinRTValue::Struct(self.default_value()),
 
-            TypeKind::Array(_) | TypeKind::FillArray(_) => {
+            TypeKind::Array(_) => {
                 WinRTValue::Array(crate::array::ArrayData::empty(self.clone()))
             }
         }

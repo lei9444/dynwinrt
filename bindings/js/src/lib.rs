@@ -158,11 +158,6 @@ impl DynWinRTType {
   }
 
   #[napi]
-  pub fn fill_array(element_type: &DynWinRTType) -> Self {
-    DynWinRTType(TABLE.fill_array(&element_type.0))
-  }
-
-  #[napi]
   pub fn i_async_action() -> Self {
     DynWinRTType(TABLE.async_action())
   }
@@ -303,6 +298,12 @@ impl DynWinRTMethodSig {
   #[napi]
   pub fn add_out(&self, typ: &DynWinRTType) -> DynWinRTMethodSig {
     DynWinRTMethodSig(self.0.clone().add_out(typ.0.clone()))
+  }
+
+  /// Add a FillArray [out] parameter: caller allocates buffer, callee fills it.
+  #[napi]
+  pub fn add_out_fill(&self, typ: &DynWinRTType) -> DynWinRTMethodSig {
+    DynWinRTMethodSig(self.0.clone().add_out_fill(typ.0.clone()))
   }
 }
 

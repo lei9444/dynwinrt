@@ -9,7 +9,8 @@ use crate::types::{EnumMember, TypeMeta};
 pub enum ParamDirection {
     In,
     Out,
-    OutArray,
+    /// FillArray: caller allocates buffer, callee fills it.
+    OutFill,
 }
 
 /// A single method parameter.
@@ -163,24 +164,13 @@ pub fn collect_imports(class: &ClassMeta) -> HashSet<(String, String)> {
     let class_name = &class.name;
 
     fn visit_type(typ: &TypeMeta, class_name: &str, imports: &mut HashSet<(String, String)>) {
-        match typ {
-            TypeMeta::RuntimeClass { namespace, name, .. } if name != class_name => {
-                imports.insert((namespace.clone(), name.clone()));
+        let mut named = Vec::new();
+        let mut _param = Vec::new();
+        visit_type_refs(typ, &mut named, &mut _param);
+        for (ns, name, _kind) in named {
+            if name != class_name {
+                imports.insert((ns, name));
             }
-            TypeMeta::Interface { namespace, name, .. } => {
-                imports.insert((namespace.clone(), name.clone()));
-            }
-            TypeMeta::Enum { namespace, name, .. } => {
-                imports.insert((namespace.clone(), name.clone()));
-            }
-            TypeMeta::AsyncOperation(inner) | TypeMeta::AsyncActionWithProgress(inner) => {
-                visit_type(inner, class_name, imports);
-            }
-            TypeMeta::AsyncOperationWithProgress(result, progress) => {
-                visit_type(result, class_name, imports);
-                visit_type(progress, class_name, imports);
-            }
-            _ => {}
         }
     }
 
@@ -243,16 +233,8 @@ pub fn resolve_dependencies(
     // Seed the worklist from initial types
     let mut worklist: Vec<(String, String, &'static str)> = Vec::new();
     let mut param_worklist: Vec<TypeMeta> = Vec::new();
-    collect_refs_from_classes(classes, &known, &mut worklist);
-    collect_refs_from_interfaces(existing_interfaces, &known, &mut worklist);
-    collect_parameterized_refs_from_classes(classes, &known, &mut param_worklist);
-    collect_parameterized_refs_from_interfaces(existing_interfaces, &known, &mut param_worklist);
-    eprintln!("[resolve_dependencies] initial param_worklist: {} items", param_worklist.len());
-    for p in &param_worklist {
-        if let TypeMeta::Parameterized { name, args, .. } = p {
-            eprintln!("  -> {} with {} args", name, args.len());
-        }
-    }
+    collect_all_refs_from_classes(classes, &known, &mut worklist, &mut param_worklist);
+    collect_all_refs_from_interfaces(existing_interfaces, &known, &mut worklist, &mut param_worklist);
 
     // Fixpoint: keep resolving until no new types are discovered
     loop {
@@ -292,48 +274,20 @@ pub fn resolve_dependencies(
         for param_type in &param_batch {
             if let TypeMeta::Parameterized { namespace, name, piid, args } = param_type {
                 let concrete_name = make_parameterized_name(name, args);
-                eprintln!("[resolve] parameterized: {} -> {}", name, concrete_name);
                 if known.contains(&concrete_name) { continue; }
                 known.insert(concrete_name.clone());
 
                 if let Some(iface) = parse_parameterized_interface(
                     &index, namespace, name, &concrete_name, piid, args,
                 ) {
-                    eprintln!("[resolve] generated {} with {} methods", concrete_name, iface.methods.len());
                     new_interfaces.push(iface);
-                } else {
-                    // Debug: check if the type exists in the index
-                    let found = index.get(namespace, name).next().is_some();
-                    eprintln!("[resolve] FAILED to parse {} from winmd (ns={}, found_in_index={})", name, namespace, found);
                 }
             }
         }
 
         // Discover new references from the newly resolved types
-        collect_refs_from_classes(&new_classes, &known, &mut worklist);
-        collect_refs_from_interfaces(&new_interfaces, &known, &mut worklist);
-        let prev_len = param_worklist.len();
-        collect_parameterized_refs_from_classes(&new_classes, &known, &mut param_worklist);
-        collect_parameterized_refs_from_interfaces(&new_interfaces, &known, &mut param_worklist);
-        if param_worklist.len() > prev_len {
-            eprintln!("[resolve] found {} new parameterized refs from {} newly resolved interfaces",
-                param_worklist.len() - prev_len, new_interfaces.len());
-            for p in &param_worklist[prev_len..] {
-                if let TypeMeta::Parameterized { name, args, .. } = p {
-                    eprintln!("  -> {} ({})", name, make_parameterized_name(name, args));
-                }
-            }
-        }
-        for iface in &new_interfaces {
-            let has_param = iface.methods.iter().any(|m| {
-                m.params.iter().any(|p| matches!(&p.typ, TypeMeta::Parameterized { .. })) ||
-                matches!(&m.return_type, Some(TypeMeta::Parameterized { .. }))
-            });
-            if has_param {
-                eprintln!("[resolve] interface {} has parameterized types in methods", iface.name);
-            }
-        }
-        eprintln!("[resolve] loop: worklist={}, param_worklist={}, new_ifaces={}", worklist.len(), param_worklist.len(), new_interfaces.len());
+        collect_all_refs_from_classes(&new_classes, &known, &mut worklist, &mut param_worklist);
+        collect_all_refs_from_interfaces(&new_interfaces, &known, &mut worklist, &mut param_worklist);
 
         dep_classes.extend(new_classes);
         dep_interfaces.extend(new_interfaces);
@@ -342,101 +296,76 @@ pub fn resolve_dependencies(
     ResolvedDeps { classes: dep_classes, interfaces: dep_interfaces, enums: dep_enums }
 }
 
-/// Visit a TypeMeta tree and collect named type references.
-fn visit_type_refs(typ: &TypeMeta, out: &mut Vec<(String, String, &'static str)>) {
+/// Visit a TypeMeta tree and collect both named type references and parameterized types.
+fn visit_type_refs(
+    typ: &TypeMeta,
+    named: &mut Vec<(String, String, &'static str)>,
+    parameterized: &mut Vec<TypeMeta>,
+) {
     match typ {
         TypeMeta::Interface { namespace, name, .. } => {
-            out.push((namespace.clone(), name.clone(), "interface"));
+            named.push((namespace.clone(), name.clone(), "interface"));
         }
         TypeMeta::RuntimeClass { namespace, name, .. } => {
-            out.push((namespace.clone(), name.clone(), "class"));
+            named.push((namespace.clone(), name.clone(), "class"));
         }
         TypeMeta::Enum { namespace, name, .. } => {
-            out.push((namespace.clone(), name.clone(), "enum"));
+            named.push((namespace.clone(), name.clone(), "enum"));
         }
         TypeMeta::AsyncOperation(inner) | TypeMeta::AsyncActionWithProgress(inner) => {
-            visit_type_refs(inner, out);
+            visit_type_refs(inner, named, parameterized);
         }
         TypeMeta::AsyncOperationWithProgress(r, p) => {
-            visit_type_refs(r, out);
-            visit_type_refs(p, out);
+            visit_type_refs(r, named, parameterized);
+            visit_type_refs(p, named, parameterized);
         }
         TypeMeta::Struct { fields, .. } => {
             for f in fields {
-                visit_type_refs(&f.typ, out);
+                visit_type_refs(&f.typ, named, parameterized);
             }
         }
         TypeMeta::Array(inner) => {
-            visit_type_refs(inner, out);
+            visit_type_refs(inner, named, parameterized);
         }
         TypeMeta::Parameterized { args, .. } => {
+            parameterized.push(typ.clone());
             for arg in args {
-                visit_type_refs(arg, out);
+                visit_type_refs(arg, named, parameterized);
             }
         }
         _ => {}
     }
 }
 
-/// Collect Parameterized type references (for parameterized interface resolution).
-fn visit_parameterized_refs(typ: &TypeMeta, out: &mut Vec<TypeMeta>) {
-    match typ {
-        TypeMeta::Parameterized { .. } => {
-            out.push(typ.clone());
-            // Also recurse into args (they might contain nested parameterized types)
-            if let TypeMeta::Parameterized { args, .. } = typ {
-                for arg in args {
-                    visit_parameterized_refs(arg, out);
-                }
-            }
-        }
-        TypeMeta::AsyncOperation(inner) | TypeMeta::AsyncActionWithProgress(inner) => {
-            visit_parameterized_refs(inner, out);
-        }
-        TypeMeta::AsyncOperationWithProgress(r, p) => {
-            visit_parameterized_refs(r, out);
-            visit_parameterized_refs(p, out);
-        }
-        TypeMeta::Array(inner) => {
-            visit_parameterized_refs(inner, out);
-        }
-        _ => {}
-    }
-}
-
-fn collect_parameterized_refs_from_methods(methods: &[MethodMeta], known: &HashSet<String>, out: &mut Vec<TypeMeta>) {
+/// Collect all type references from methods: both named and parameterized.
+fn collect_all_refs_from_methods(
+    methods: &[MethodMeta],
+    known: &HashSet<String>,
+    named_out: &mut Vec<(String, String, &'static str)>,
+    param_out: &mut Vec<TypeMeta>,
+) {
+    let mut named = Vec::new();
+    let mut parameterized = Vec::new();
     for m in methods {
-        let mut refs = Vec::new();
-        for p in &m.params { visit_parameterized_refs(&p.typ, &mut refs); }
-        if let Some(ref rt) = m.return_type { visit_parameterized_refs(rt, &mut refs); }
-        for r in refs {
-            if let TypeMeta::Parameterized { name, args, .. } = &r {
-                let concrete = make_parameterized_name(name, args);
-                if !known.contains(&concrete) {
-                    out.push(r);
-                }
+        for p in &m.params {
+            visit_type_refs(&p.typ, &mut named, &mut parameterized);
+        }
+        if let Some(ref rt) = m.return_type {
+            visit_type_refs(rt, &mut named, &mut parameterized);
+        }
+    }
+    for r in named {
+        if !known.contains(&r.1) {
+            named_out.push(r);
+        }
+    }
+    for r in parameterized {
+        if let TypeMeta::Parameterized { name, args, .. } = &r {
+            let concrete = make_parameterized_name(name, args);
+            if !known.contains(&concrete) {
+                param_out.push(r);
             }
         }
-    }
-}
-
-fn collect_parameterized_refs_from_classes(classes: &[ClassMeta], known: &HashSet<String>, out: &mut Vec<TypeMeta>) {
-    for c in classes {
-        if let Some(ref iface) = c.default_interface {
-            collect_parameterized_refs_from_methods(&iface.methods, known, out);
-        }
-        for iface in &c.factory_interfaces {
-            collect_parameterized_refs_from_methods(&iface.methods, known, out);
-        }
-        for iface in &c.static_interfaces {
-            collect_parameterized_refs_from_methods(&iface.methods, known, out);
-        }
-    }
-}
-
-fn collect_parameterized_refs_from_interfaces(interfaces: &[InterfaceMeta], known: &HashSet<String>, out: &mut Vec<TypeMeta>) {
-    for i in interfaces {
-        collect_parameterized_refs_from_methods(&i.methods, known, out);
     }
 }
 
@@ -472,32 +401,35 @@ fn type_meta_short_name(typ: &TypeMeta) -> String {
     }
 }
 
-fn collect_refs_from_methods(methods: &[MethodMeta], known: &HashSet<String>, out: &mut Vec<(String, String, &'static str)>) {
-    for m in methods {
-        let mut refs = Vec::new();
-        for p in &m.params { visit_type_refs(&p.typ, &mut refs); }
-        if let Some(ref rt) = m.return_type { visit_type_refs(rt, &mut refs); }
-        for r in refs {
-            if !known.contains(&r.1) {
-                out.push(r);
-            }
-        }
-    }
-}
-
-fn collect_refs_from_classes(classes: &[ClassMeta], known: &HashSet<String>, out: &mut Vec<(String, String, &'static str)>) {
+/// Collect all refs from a list of classes (iterates all interface methods).
+fn collect_all_refs_from_classes(
+    classes: &[ClassMeta],
+    known: &HashSet<String>,
+    named_out: &mut Vec<(String, String, &'static str)>,
+    param_out: &mut Vec<TypeMeta>,
+) {
     for c in classes {
         if let Some(ref iface) = c.default_interface {
-            collect_refs_from_methods(&iface.methods, known, out);
+            collect_all_refs_from_methods(&iface.methods, known, named_out, param_out);
         }
-        for iface in &c.factory_interfaces { collect_refs_from_methods(&iface.methods, known, out); }
-        for iface in &c.static_interfaces { collect_refs_from_methods(&iface.methods, known, out); }
+        for iface in &c.factory_interfaces {
+            collect_all_refs_from_methods(&iface.methods, known, named_out, param_out);
+        }
+        for iface in &c.static_interfaces {
+            collect_all_refs_from_methods(&iface.methods, known, named_out, param_out);
+        }
     }
 }
 
-fn collect_refs_from_interfaces(interfaces: &[InterfaceMeta], known: &HashSet<String>, out: &mut Vec<(String, String, &'static str)>) {
+/// Collect all refs from a list of standalone interfaces.
+fn collect_all_refs_from_interfaces(
+    interfaces: &[InterfaceMeta],
+    known: &HashSet<String>,
+    named_out: &mut Vec<(String, String, &'static str)>,
+    param_out: &mut Vec<TypeMeta>,
+) {
     for i in interfaces {
-        collect_refs_from_methods(&i.methods, known, out);
+        collect_all_refs_from_methods(&i.methods, known, named_out, param_out);
     }
 }
 
@@ -629,72 +561,7 @@ fn parse_interface(
 ) -> Option<InterfaceMeta> {
     let def = index.get(namespace, name).next()?;
     let iid = extract_iid(&def);
-
-    let mut methods = Vec::new();
-    for (i, method) in def.methods().enumerate() {
-        let vtable_index = 6 + i;
-        let sig = method.signature(&[]);
-
-        let overload_name = method.find_attribute("OverloadAttribute").and_then(|a| {
-            a.value().into_iter().next().and_then(|(_, v)| match v {
-                windows_metadata::Value::Utf8(s) => Some(s),
-                _ => None,
-            })
-        });
-        let method_name = overload_name.unwrap_or_else(|| method.name().to_string());
-        let is_property_getter = method_name.starts_with("get_");
-        let is_property_setter = method_name.starts_with("put_");
-        let is_event_add = method_name.starts_with("add_");
-        let is_event_remove = method_name.starts_with("remove_");
-
-        let mut params = Vec::new();
-        let param_defs: Vec<_> = method.params().collect();
-
-        for (j, param_def) in param_defs.iter().enumerate() {
-            if j < sig.types.len() {
-                let typ = map_winmd_type(&sig.types[j], index);
-                let is_out = param_def.flags().contains(windows_metadata::ParamAttributes::Out);
-                let direction = if is_out {
-                    if matches!(sig.types[j], windows_metadata::Type::ArrayRef(_)) {
-                        ParamDirection::OutArray
-                    } else {
-                        ParamDirection::Out
-                    }
-                } else {
-                    ParamDirection::In
-                };
-                params.push(ParamMeta {
-                    name: param_def.name().to_string(),
-                    typ,
-                    direction,
-                });
-            }
-        }
-
-        let return_type = if sig.return_type == windows_metadata::Type::Void {
-            None
-        } else {
-            Some(map_winmd_type(&sig.return_type, index))
-        };
-
-        methods.push(MethodMeta {
-            name: method_name,
-            vtable_index,
-            params,
-            return_type,
-            is_property_getter,
-            is_property_setter,
-            is_event_add,
-            is_event_remove,
-        });
-    }
-
-    Some(InterfaceMeta {
-        name: name.to_string(),
-        namespace: namespace.to_string(),
-        iid,
-        methods,
-    })
+    parse_interface_methods(index, &def, name, namespace, &iid, &[])
 }
 
 /// Parse a parameterized interface definition (e.g. IVector`1) from winmd,
@@ -703,17 +570,27 @@ fn parse_interface(
 fn parse_parameterized_interface(
     index: &reader::Index,
     namespace: &str,
-    generic_name: &str,    // e.g. "IVector`1"
-    concrete_name: &str,   // e.g. "IVector_String" (for the generated file)
+    generic_name: &str,
+    concrete_name: &str,
     piid: &str,
     generic_args: &[TypeMeta],
 ) -> Option<InterfaceMeta> {
-    // The index stores names with backtick arity trimmed (e.g. "IVector" not "IVector`1")
     let trimmed_name = generic_name.split('`').next().unwrap_or(generic_name);
     let def = index.get(namespace, trimmed_name).next()?;
+    parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args)
+}
 
-    // Convert TypeMeta args to windows_metadata::Type for signature resolution
-    let winmd_generics: Vec<windows_metadata::Type> = generic_args.iter().map(type_meta_to_winmd_type).collect();
+/// Core interface parsing: extract methods from a TypeDef, optionally substituting generics.
+fn parse_interface_methods(
+    index: &reader::Index,
+    def: &reader::TypeDef,
+    output_name: &str,
+    namespace: &str,
+    iid: &str,
+    generic_args: &[TypeMeta],
+) -> Option<InterfaceMeta> {
+    let winmd_generics: Vec<windows_metadata::Type> =
+        generic_args.iter().map(type_meta_to_winmd_type).collect();
 
     let mut methods = Vec::new();
     for (i, method) in def.methods().enumerate() {
@@ -727,10 +604,6 @@ fn parse_parameterized_interface(
             })
         });
         let method_name = overload_name.unwrap_or_else(|| method.name().to_string());
-        let is_property_getter = method_name.starts_with("get_");
-        let is_property_setter = method_name.starts_with("put_");
-        let is_event_add = method_name.starts_with("add_");
-        let is_event_remove = method_name.starts_with("remove_");
 
         let mut params = Vec::new();
         let param_defs: Vec<_> = method.params().collect();
@@ -739,9 +612,11 @@ fn parse_parameterized_interface(
                 let typ = map_winmd_type_with_generics(&sig.types[j], index, generic_args);
                 let is_out = param_def.flags().contains(windows_metadata::ParamAttributes::Out);
                 let direction = if is_out {
-                    if matches!(sig.types[j], windows_metadata::Type::ArrayRef(_)) {
-                        ParamDirection::OutArray
+                    if matches!(sig.types[j], windows_metadata::Type::Array(_)) {
+                        // [out] Array = FillArray (caller allocates buffer)
+                        ParamDirection::OutFill
                     } else {
+                        // [out] ArrayRef or scalar = ReceiveArray / regular out
                         ParamDirection::Out
                     }
                 } else {
@@ -762,21 +637,21 @@ fn parse_parameterized_interface(
         };
 
         methods.push(MethodMeta {
-            name: method_name,
+            name: method_name.clone(),
             vtable_index,
             params,
             return_type,
-            is_property_getter,
-            is_property_setter,
-            is_event_add,
-            is_event_remove,
+            is_property_getter: method_name.starts_with("get_"),
+            is_property_setter: method_name.starts_with("put_"),
+            is_event_add: method_name.starts_with("add_"),
+            is_event_remove: method_name.starts_with("remove_"),
         });
     }
 
     Some(InterfaceMeta {
-        name: concrete_name.to_string(),
+        name: output_name.to_string(),
         namespace: namespace.to_string(),
-        iid: piid.to_string(),
+        iid: iid.to_string(),
         methods,
     })
 }
