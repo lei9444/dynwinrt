@@ -460,7 +460,7 @@ fn bench_geopoint_create(c: &mut Criterion) {
 
     // Dynamic — struct in-param goes through Libffi path
     let f64_h = table.f64_type();
-    let geo_struct_type = table.define_struct(&[f64_h.clone(), f64_h.clone(), f64_h]);
+    let geo_struct_type = table.struct_type("Windows.Devices.Geolocation.BasicGeoposition", &[f64_h.clone(), f64_h.clone(), f64_h]);
 
     // Register IGeopointFactory
     let factory_iid = windows::Devices::Geolocation::IGeopointFactory::IID;

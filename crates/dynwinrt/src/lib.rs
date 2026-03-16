@@ -154,7 +154,7 @@ mod tests {
         // 1. Define BasicGeoposition { Latitude: f64, Longitude: f64, Altitude: f64 }
         let reg = metadata_table::MetadataTable::new();
         let f64_h = reg.f64_type();
-        let geo_type = reg.define_struct(&[f64_h.clone(), f64_h.clone(), f64_h]);
+        let geo_type = reg.struct_type("Windows.Devices.Geolocation.BasicGeoposition", &[f64_h.clone(), f64_h.clone(), f64_h]);
 
         // 2. Create and populate struct value
         let mut geo_val = geo_type.default_value();
@@ -220,7 +220,7 @@ mod tests {
         // 2. Define BasicGeoposition struct type
         let reg = metadata_table::MetadataTable::new();
         let f64_h = reg.f64_type();
-        let geo_type = reg.define_struct(&[f64_h.clone(), f64_h.clone(), f64_h]);
+        let geo_type = reg.struct_type("Windows.Devices.Geolocation.BasicGeoposition", &[f64_h.clone(), f64_h.clone(), f64_h]);
 
         // 3. Define IGeopoint with get_Position at vtable index 6
         // ABI: fn(this, *out_BasicGeoposition) -> HRESULT

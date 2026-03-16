@@ -72,12 +72,12 @@ impl MetadataTable {
             TypeKind::Object => "cinterface(IInspectable)".to_string(),
             TypeKind::HResult => "i4".to_string(),
             TypeKind::Enum(idx) => {
-                let name = &self.enum_names.read().unwrap()[idx as usize];
+                let name = self.get_enum_name(idx);
                 format!("enum({};i4)", name)
             }
             TypeKind::Struct(idx) => {
                 let entry = &self.structs.read().unwrap()[idx as usize];
-                let name = entry.name.as_deref().unwrap_or("");
+                let name = &entry.name;
                 let field_sigs: Vec<String> = entry.field_kinds.iter()
                     .map(|k| self.signature_string_kind(*k))
                     .collect();

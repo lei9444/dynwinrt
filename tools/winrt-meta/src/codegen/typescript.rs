@@ -588,7 +588,7 @@ fn generate_struct_helpers(s: &TypeMeta) -> String {
     // Type constant for _pack
     let full_name = format!("{}.{}", namespace, name);
     let field_types: Vec<String> = fields.iter().map(|f| ts_dynwinrt_type(&f.typ)).collect();
-    out.push_str(&format!("const _{}_Type = DynWinRtType.registerStruct('{}', [{}]);\n",
+    out.push_str(&format!("const _{}_Type = DynWinRtType.structType('{}', [{}]);\n",
         name, full_name, field_types.join(", ")));
 
     // _pack function: plain JS object → DynWinRtStruct
@@ -881,8 +881,8 @@ fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
         // Strings
         TypeMeta::String => "DynWinRtType.hstring()".to_string(),
 
-        // GUID — 16-byte struct {u32, u16, u16, u8[8]}
-        TypeMeta::Guid => "DynWinRtType.structType([DynWinRtType.u32(), DynWinRtType.u32(), DynWinRtType.u32(), DynWinRtType.u32()])".to_string(),
+        // GUID — native type in dynwinrt
+        TypeMeta::Guid => "DynWinRtType.guidType()".to_string(),
 
         // Generic object
         TypeMeta::Object => "DynWinRtType.object()".to_string(),
@@ -930,7 +930,7 @@ fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             let field_types: Vec<String> = fields.iter()
                 .map(|f| ts_dynwinrt_type(&f.typ))
                 .collect();
-            format!("DynWinRtType.registerStruct('{}', [{}])", full_name, field_types.join(", "))
+            format!("DynWinRtType.structType('{}', [{}])", full_name, field_types.join(", "))
         }
 
         // Array — recursively expand element type
@@ -938,10 +938,17 @@ fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             format!("DynWinRtType.arrayType({})", ts_dynwinrt_type(inner))
         }
 
-        // Enum — named for correct IID signature
-        TypeMeta::Enum { namespace, name, .. } => {
+        // Enum — named for correct IID signature, with member values
+        TypeMeta::Enum { namespace, name, members, .. } => {
             let full_name = format!("{}.{}", namespace, name);
-            format!("DynWinRtType.namedEnum('{}')", full_name)
+            if members.is_empty() {
+                format!("DynWinRtType.enumType('{}')", full_name)
+            } else {
+                let names: Vec<String> = members.iter().map(|m| format!("'{}'", m.name)).collect();
+                let values: Vec<String> = members.iter().map(|m| m.value.to_string()).collect();
+                format!("DynWinRtType.enumType('{}', [{}], [{}])",
+                    full_name, names.join(", "), values.join(", "))
+            }
         }
 
         // Parameterized — preserve generic type info for IID computation

@@ -84,6 +84,7 @@ pub enum WinRTValue {
     OutValue(*mut std::ffi::c_void, TypeHandle),
     Async(AsyncInfo),
     ArrayOfIUnknown(ArrayOfIUnknownData),
+    Enum { value: i32, type_handle: TypeHandle },
     Struct(crate::metadata_table::ValueTypeData),
     Array(ArrayData),
 }
@@ -117,6 +118,7 @@ impl WinRTValue {
             WinRTValue::U16(v) => Some(*v as i32),
             WinRTValue::I32(v) => Some(*v),
             WinRTValue::U32(v) => Some(*v as i32),
+            WinRTValue::Enum { value, .. } => Some(*value),
             _ => None,
         }
     }
@@ -172,6 +174,7 @@ impl WinRTValue {
             WinRTValue::I16(_) => TypeKind::I16,
             WinRTValue::U16(_) => TypeKind::U16,
             WinRTValue::I32(_) => TypeKind::I32,
+            WinRTValue::Enum { type_handle, .. } => type_handle.kind(),
             WinRTValue::U32(_) => TypeKind::U32,
             WinRTValue::I64(_) => TypeKind::I64,
             WinRTValue::U64(_) => TypeKind::U64,
@@ -197,6 +200,7 @@ impl WinRTValue {
             WinRTValue::I16(v) => v as *mut i16 as _,
             WinRTValue::U16(v) => v as *mut u16 as _,
             WinRTValue::I32(v) => v as *mut i32 as _,
+            WinRTValue::Enum { value, .. } => value as *mut i32 as _,
             WinRTValue::U32(v) => v as *mut u32 as _,
             WinRTValue::I64(v) => v as *mut i64 as _,
             WinRTValue::U64(v) => v as *mut u64 as _,
@@ -225,6 +229,7 @@ impl WinRTValue {
             WinRTValue::I16(v) => arg(v),
             WinRTValue::U16(v) => arg(v),
             WinRTValue::I32(v) => arg(v),
+            WinRTValue::Enum { value, .. } => arg(value),
             WinRTValue::U32(v) => arg(v),
             WinRTValue::I64(v) => arg(v),
             WinRTValue::U64(v) => arg(v),

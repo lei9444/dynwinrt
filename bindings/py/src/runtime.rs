@@ -179,20 +179,18 @@ impl DynWinRTType {
     // -- Composite types --
 
     #[staticmethod]
-    fn struct_type(fields: Vec<DynWinRTType>) -> Self {
+    fn struct_type(name: String, fields: Vec<DynWinRTType>) -> Self {
         let handles: Vec<dynwinrt::TypeHandle> = fields.iter().map(|f| f.0.clone()).collect();
-        DynWinRTType(TABLE.define_struct(&handles))
+        DynWinRTType(TABLE.struct_type(&name, &handles))
     }
 
     #[staticmethod]
-    fn register_struct(name: String, fields: Vec<DynWinRTType>) -> Self {
-        let handles: Vec<dynwinrt::TypeHandle> = fields.iter().map(|f| f.0.clone()).collect();
-        DynWinRTType(TABLE.define_named_struct(&name, &handles))
-    }
-
-    #[staticmethod]
-    fn named_enum(name: String) -> Self {
-        DynWinRTType(TABLE.define_named_enum(&name))
+    fn enum_type(name: String, member_names: Option<Vec<String>>, member_values: Option<Vec<i32>>) -> Self {
+        let members = match (member_names, member_values) {
+            (Some(names), Some(values)) => names.into_iter().zip(values).collect(),
+            _ => Vec::new(),
+        };
+        DynWinRTType(TABLE.enum_type(&name, members))
     }
 
     #[staticmethod]

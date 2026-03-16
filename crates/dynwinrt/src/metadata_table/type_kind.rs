@@ -88,7 +88,7 @@ pub enum TypeKind {
     OutValue(u32),                     // idx → inner_types
 
     // Named enum — ABI is i32, but carries name for signature computation
-    Enum(u32),                         // idx → enum_names
+    Enum(u32),                         // idx → enum_entries
 
     // Composite
     Struct(u32),                       // idx → structs

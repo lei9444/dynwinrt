@@ -121,7 +121,7 @@ function testStructIn() {
   console.log('\n--- Test: Struct In-Param (Geopoint.Create) ---')
 
   // BasicGeoposition = { f64 Latitude, f64 Longitude, f64 Altitude }
-  const geoposType = DynWinRtType.structType([
+  const geoposType = DynWinRtType.structType('Windows.Devices.Geolocation.BasicGeoposition', [
     DynWinRtType.f64(),
     DynWinRtType.f64(),
     DynWinRtType.f64(),
@@ -159,7 +159,7 @@ function testStructOut() {
   console.log('\n--- Test: Struct Out-Param (Geopoint.Position) ---')
 
   // First create a Geopoint
-  const geoposType = DynWinRtType.structType([
+  const geoposType = DynWinRtType.structType('Windows.Devices.Geolocation.BasicGeoposition', [
     DynWinRtType.f64(),
     DynWinRtType.f64(),
     DynWinRtType.f64(),

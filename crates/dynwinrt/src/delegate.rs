@@ -176,7 +176,8 @@ fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> WinRTValue {
         }
         // Small integer types packed into pointer-sized arg
         TypeKind::Bool => WinRTValue::Bool((raw as usize) != 0),
-        TypeKind::I32 | TypeKind::Enum(_) => WinRTValue::I32(raw as i32),
+        TypeKind::I32 => WinRTValue::I32(raw as i32),
+        TypeKind::Enum(_) => WinRTValue::Enum { value: raw as i32, type_handle: typ.clone() },
         TypeKind::U32 => WinRTValue::U32(raw as u32),
         TypeKind::I64 => WinRTValue::I64(raw as i64),
         TypeKind::U64 => WinRTValue::U64(raw as u64),

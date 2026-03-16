@@ -177,24 +177,29 @@ impl DynWinRTType {
     DynWinRTType(TABLE.async_operation_with_progress(&result_type.0, &progress_type.0))
   }
 
-  /// Declare a struct type from field types (anonymous).
+  /// Create a named struct type with WinRT full name (for correct IID signature).
+  /// Deduplicates by name — calling with the same name twice returns the existing handle.
   #[napi]
-  pub fn struct_type(fields: Vec<&DynWinRTType>) -> Self {
+  pub fn struct_type(name: String, fields: Vec<&DynWinRTType>) -> Self {
     let handles: Vec<dynwinrt::TypeHandle> = fields.iter().map(|f| f.0.clone()).collect();
-    DynWinRTType(TABLE.define_struct(&handles))
+    DynWinRTType(TABLE.struct_type(&name, &handles))
   }
 
-  /// Declare a named struct type with WinRT full name (for correct IID signature).
+  /// Create a named enum type (ABI = i32, carries name for signature).
+  /// `member_names` and `member_values` are parallel arrays of enum member definitions.
   #[napi]
-  pub fn register_struct(name: String, fields: Vec<&DynWinRTType>) -> Self {
-    let handles: Vec<dynwinrt::TypeHandle> = fields.iter().map(|f| f.0.clone()).collect();
-    DynWinRTType(TABLE.define_named_struct(&name, &handles))
+  pub fn enum_type(name: String, member_names: Option<Vec<String>>, member_values: Option<Vec<i32>>) -> Self {
+    let members = match (member_names, member_values) {
+      (Some(names), Some(values)) => names.into_iter().zip(values).collect(),
+      _ => Vec::new(),
+    };
+    DynWinRTType(TABLE.enum_type(&name, members))
   }
 
-  /// Declare a named enum type (ABI = i32, carries name for signature).
+  /// Look up an enum member's i32 value by name.
   #[napi]
-  pub fn named_enum(name: String) -> Self {
-    DynWinRTType(TABLE.define_named_enum(&name))
+  pub fn get_enum_value(enum_name: String, member_name: String) -> Option<i32> {
+    TABLE.get_enum_value(&enum_name, &member_name)
   }
 
   /// Declare a parameterized type (generic instantiation, e.g. IReference<UInt64>).
@@ -400,6 +405,32 @@ impl DynWinRTValue {
   pub fn f64(value: f64) -> DynWinRTValue {
     DynWinRTValue(dynwinrt::WinRTValue::F64(value))
   }
+  /// Create an enum value from an i32. The type_handle must be an enum type.
+  #[napi]
+  pub fn enum_value(enum_type: &DynWinRTType, value: i32) -> DynWinRTValue {
+    DynWinRTValue(dynwinrt::WinRTValue::Enum { value, type_handle: enum_type.0.clone() })
+  }
+
+  /// Get the i32 value of an enum. Returns None if not an enum.
+  #[napi]
+  pub fn get_enum_int(&self) -> Option<i32> {
+    match &self.0 {
+      dynwinrt::WinRTValue::Enum { value, .. } => Some(*value),
+      _ => None,
+    }
+  }
+
+  /// Get the member name of an enum value. Returns None if not an enum or no matching member.
+  #[napi]
+  pub fn get_enum_name(&self) -> Option<String> {
+    match &self.0 {
+      dynwinrt::WinRTValue::Enum { value, type_handle } => {
+        type_handle.enum_member_name(*value)
+      }
+      _ => None,
+    }
+  }
+
   #[napi]
   pub fn hstring(value: String) -> DynWinRTValue {
     DynWinRTValue(dynwinrt::WinRTValue::HString(HSTRING::from(value)))

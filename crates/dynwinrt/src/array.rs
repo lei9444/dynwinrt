@@ -151,6 +151,12 @@ impl ArrayData {
                 TypeKind::I32 => {
                     WinRTValue::I32(*(base.add(index * elem_size) as *const i32))
                 }
+                TypeKind::Enum(_) => {
+                    WinRTValue::Enum {
+                        value: *(base.add(index * elem_size) as *const i32),
+                        type_handle: self.element_type.clone(),
+                    }
+                }
                 TypeKind::U32 => {
                     WinRTValue::U32(*(base.add(index * elem_size) as *const u32))
                 }
@@ -376,6 +382,7 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
             WinRTValue::I16(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::U16(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::I32(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
+            WinRTValue::Enum { value, .. } => buffer.extend_from_slice(&value.to_ne_bytes()),
             WinRTValue::U32(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::I64(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::U64(v) => buffer.extend_from_slice(&v.to_ne_bytes()),

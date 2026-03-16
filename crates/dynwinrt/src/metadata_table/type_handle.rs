@@ -188,6 +188,15 @@ impl TypeHandle {
         }
     }
 
+    /// Reverse-lookup an enum member name from its i32 value.
+    /// Returns None if not an Enum type or no member matches.
+    pub fn enum_member_name(&self, value: i32) -> Option<String> {
+        match self.kind {
+            TypeKind::Enum(idx) => self.table.get_enum_member_name(idx, value),
+            _ => None,
+        }
+    }
+
     pub fn signature_string(&self) -> String {
         self.table.signature_string_kind(self.kind)
     }
@@ -225,7 +234,8 @@ impl TypeHandle {
             TypeKind::U8 => WinRTValue::U8(0),
             TypeKind::I16 => WinRTValue::I16(0),
             TypeKind::U16 | TypeKind::Char16 => WinRTValue::U16(0),
-            TypeKind::I32 | TypeKind::Enum(_) => WinRTValue::I32(0),
+            TypeKind::I32 => WinRTValue::I32(0),
+            TypeKind::Enum(_) => WinRTValue::Enum { value: 0, type_handle: self.clone() },
             TypeKind::U32 => WinRTValue::U32(0),
             TypeKind::I64 => WinRTValue::I64(0),
             TypeKind::U64 => WinRTValue::U64(0),
@@ -275,6 +285,7 @@ impl TypeHandle {
                 TypeKind::I16 => Ok(WinRTValue::I16(*(ptr as *mut i16))),
                 TypeKind::U16 | TypeKind::Char16 => Ok(WinRTValue::U16(*(ptr as *mut u16))),
                 TypeKind::I32 => Ok(WinRTValue::I32(*(ptr as *mut i32))),
+                TypeKind::Enum(_) => Ok(WinRTValue::Enum { value: *(ptr as *mut i32), type_handle: self.clone() }),
                 TypeKind::U32 => Ok(WinRTValue::U32(*(ptr as *mut u32))),
                 TypeKind::I64 => Ok(WinRTValue::I64(*(ptr as *mut i64))),
                 TypeKind::U64 => Ok(WinRTValue::U64(*(ptr as *mut u64))),
@@ -335,6 +346,7 @@ impl TypeHandle {
             (TypeKind::I16, AbiValue::I16(v)) => Ok(WinRTValue::I16(*v)),
             (TypeKind::U16 | TypeKind::Char16, AbiValue::U16(v)) => Ok(WinRTValue::U16(*v)),
             (TypeKind::I32, AbiValue::I32(v)) => Ok(WinRTValue::I32(*v)),
+            (TypeKind::Enum(_), AbiValue::I32(v)) => Ok(WinRTValue::Enum { value: *v, type_handle: self.clone() }),
             (TypeKind::U32, AbiValue::U32(v)) => Ok(WinRTValue::U32(*v)),
             (TypeKind::I64, AbiValue::I64(v)) => Ok(WinRTValue::I64(*v)),
             (TypeKind::U64, AbiValue::U64(v)) => Ok(WinRTValue::U64(*v)),
