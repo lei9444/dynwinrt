@@ -1258,3 +1258,103 @@ impl DynWinRtDelegate {
     DynWinRTValue(self.0.clone())
   }
 }
+
+// ======================================================================
+// Static benchmark wrappers — for comparing JS→static vs JS→dynwinrt
+// ======================================================================
+
+#[napi]
+pub struct StaticBench;
+
+#[napi]
+impl StaticBench {
+  /// Create a Uri and return the Host property (static windows-rs projection).
+  #[napi]
+  pub fn uri_get_host(uri_str: String) -> String {
+    let uri = windows::Foundation::Uri::CreateUri(&HSTRING::from(uri_str)).unwrap();
+    uri.Host().unwrap().to_string()
+  }
+
+  /// Get Host from an already-created static Uri object.
+  /// Call uri_create() first, then pass the result here.
+  #[napi]
+  pub fn uri_create(uri_str: String) -> DynWinRTValue {
+    let uri = windows::Foundation::Uri::CreateUri(&HSTRING::from(uri_str)).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(uri.cast().unwrap()))
+  }
+
+  /// Read Host from a pre-created Uri (pure getter benchmark).
+  #[napi]
+  pub fn uri_host_from_obj(obj: &DynWinRTValue) -> String {
+    let unk = obj.0.as_object().unwrap();
+    let uri: windows::Foundation::Uri = unk.cast().unwrap();
+    uri.Host().unwrap().to_string()
+  }
+
+  /// Read Port from a pre-created Uri (pure i32 getter benchmark).
+  #[napi]
+  pub fn uri_port_from_obj(obj: &DynWinRTValue) -> i32 {
+    let unk = obj.0.as_object().unwrap();
+    let uri: windows::Foundation::Uri = unk.cast().unwrap();
+    uri.Port().unwrap()
+  }
+
+  /// Read Suspicious from a pre-created Uri (bool getter).
+  #[napi]
+  pub fn uri_suspicious_from_obj(obj: &DynWinRTValue) -> bool {
+    let unk = obj.0.as_object().unwrap();
+    let uri: windows::Foundation::Uri = unk.cast().unwrap();
+    uri.Suspicious().unwrap()
+  }
+
+  /// CombineUri on a pre-created Uri (1 hstring in → object out).
+  #[napi]
+  pub fn uri_combine(obj: &DynWinRTValue, relative: String) -> DynWinRTValue {
+    let unk = obj.0.as_object().unwrap();
+    let uri: windows::Foundation::Uri = unk.cast().unwrap();
+    let result = uri.CombineUri(&HSTRING::from(relative)).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(result.cast().unwrap()))
+  }
+
+  /// CreateWithRelativeUri (2 hstring in → object out).
+  #[napi]
+  pub fn uri_create_with_relative(base: String, relative: String) -> DynWinRTValue {
+    let uri = windows::Foundation::Uri::CreateWithRelativeUri(&HSTRING::from(base), &HSTRING::from(relative)).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(uri.cast().unwrap()))
+  }
+
+  // --- PropertyValue: 1 in → 1 out, different input types ---
+
+  #[napi]
+  pub fn pv_create_i32(v: i32) -> DynWinRTValue {
+    let pv = windows::Foundation::PropertyValue::CreateInt32(v).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(pv.cast().unwrap()))
+  }
+
+  #[napi]
+  pub fn pv_create_f64(v: f64) -> DynWinRTValue {
+    let pv = windows::Foundation::PropertyValue::CreateDouble(v).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(pv.cast().unwrap()))
+  }
+
+  #[napi]
+  pub fn pv_create_bool(v: bool) -> DynWinRTValue {
+    let pv = windows::Foundation::PropertyValue::CreateBoolean(v).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(pv.cast().unwrap()))
+  }
+
+  #[napi]
+  pub fn pv_create_string(v: String) -> DynWinRTValue {
+    let pv = windows::Foundation::PropertyValue::CreateString(&HSTRING::from(v)).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(pv.cast().unwrap()))
+  }
+
+  /// Create Geopoint from coordinates (static projection, struct in-param).
+  #[napi]
+  pub fn geopoint_create(lat: f64, lon: f64, alt: f64) -> DynWinRTValue {
+    use windows::Devices::Geolocation::{BasicGeoposition, Geopoint};
+    let pos = BasicGeoposition { Latitude: lat, Longitude: lon, Altitude: alt };
+    let gp = Geopoint::Create(pos).unwrap();
+    DynWinRTValue(dynwinrt::WinRTValue::Object(gp.cast().unwrap()))
+  }
+}
