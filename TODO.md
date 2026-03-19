@@ -2,7 +2,7 @@
 
 ## P0 - Release Blockers
 
-- [ ] **JS binding error handling**: `bindings/js/src/lib.rs` still has `.unwrap()` calls that crash the Node.js process; replace remaining ones with `napi::Result` + `.map_err()` (some already fixed: `callSingleOut0/1`, `call_0`)
+- [x] **JS binding error handling**: All 13 `.unwrap()` calls in `bindings/js/src/lib.rs` replaced with `napi::Result` + `.map_err()` / `.ok_or_else()` — errors now surface as JS exceptions instead of crashing the Node.js process
 - [ ] **Package metadata**: All Cargo.toml files missing `authors`, `license`, `description`, `repository`, `keywords`
   - `bindings/js/package.json` repository URL points to napi-rs template, needs update
   - `bindings/py/pyproject.toml` missing `authors`, `license`, `homepage`
@@ -42,6 +42,8 @@
 - [ ] **Performance**:
   - `call()` / `callVoid()` create a temporary InterfaceSignature + build Method per call; should cache or remove in favor of `invoke()`
   - `invoke()` should accept raw JS values (number, string, bool) instead of requiring `DynWinRtValue` wrappers — saves ~0.6-1.6µs per argument (one fewer napi boundary crossing). Needs `in_param_types()` on MethodHandle + type-directed conversion in `bindings/js/src/lib.rs`
+  - Rust core: `invoke_method` takes RwLock read on every call (~15-20 ns); store `Arc<Method>` in MethodHandle directly to bypass lock
+  - Rust core: `Ok(vec![out])` heap-allocates per call; switch to `SmallVec<[WinRTValue; 2]>` for stack return
 - [ ] **Multi-platform builds**:
   - npm prebuild support (currently only win32-x64-msvc)
   - ARM64 Windows validation
@@ -61,3 +63,6 @@
 - [x] **callVoid()**: Added for void WinRT method calls
 - [x] **DynWinRtType.iid()**: Compute parameterized IID from JS
 - [x] **WinGuid.toString()**: For cache keys
+- [x] **JS binding error handling**: All 13 `.unwrap()` in `bindings/js/src/lib.rs` → `napi::Result` with contextual error messages
+- [x] **Electron benchmark app**: `bench-electron/` — full IPC round-trip benchmark (renderer → main → WinRT → main → renderer), static vs dynamic comparison. IPC baseline ~80µs dominates, ratio ~1.0x across all operations
+- [x] **Enum as independent runtime type**: `WinRTValue::Enum { value, type_handle }` fully implemented across value.rs, call.rs, delegate.rs, array.rs, type_handle.rs, and JS bindings

@@ -35,7 +35,7 @@ impl Error {
                     expected, actual
                 )
             }
-            Error::WindowsError(err) => format!("Windows error: {}", err),
+            Error::WindowsError(err) => format!("0x{:08X}: {}", err.code().0 as u32, err),
             Error::TypeNotFound(name) => format!("Type not found: {}", name),
             Error::NotAnInterface(name) => format!("Not an interface: {}", name),
             Error::MethodNotFound(iface, method) => {

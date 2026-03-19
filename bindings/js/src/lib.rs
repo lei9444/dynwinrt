@@ -3,13 +3,8 @@
 use std::sync::Arc;
 
 use dynwinrt;
-use napi::{
-  bindgen_prelude::Result,
-  Error, Status,
-};
 use napi_derive::napi;
-use windows::core::{h, IUnknown, Interface, HSTRING};
-use windows_future::IAsyncOperationWithProgress;
+use windows::core::{IUnknown, Interface, HSTRING};
 
 /// Shared MetadataTable — created once, used everywhere.
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
@@ -39,18 +34,6 @@ pub fn ro_initialize(apartment_type: Option<i32>) {
   // Ignore "already initialized" (S_FALSE) and "changed mode" (RPC_E_CHANGED_MODE)
   // This allows dynwinrt-js to work in hosts like Electron that pre-initialize COM.
   let _ = unsafe { RoInitialize(init_type) };
-}
-
-#[napi]
-pub fn ro_uninitialize() {
-  use windows::Win32::System::WinRT::RoUninitialize;
-  unsafe { RoUninitialize() };
-}
-
-#[napi]
-pub async fn winrt_value_to_promise(x: &DynWinRTValue) -> DynWinRTValue {
-  let v = (&x.0).await.unwrap();
-  DynWinRTValue(v)
 }
 
 // ======================================================================
@@ -266,9 +249,10 @@ pub struct WinGUID(windows::core::GUID);
 #[napi]
 impl WinGUID {
   #[napi]
-  pub fn parse(guid_str: String) -> Self {
-    let guid = windows::core::GUID::try_from(guid_str.as_str()).unwrap();
-    WinGUID(guid)
+  pub fn parse(guid_str: String) -> napi::Result<Self> {
+    let guid = windows::core::GUID::try_from(guid_str.as_str())
+      .map_err(|_| napi::Error::from_reason(format!("Invalid GUID: '{}'", guid_str)))?;
+    Ok(WinGUID(guid))
   }
 
   #[napi]
@@ -340,7 +324,8 @@ impl DynWinRTMethodHandle {
     if results.is_empty() {
       Ok(DynWinRTValue(dynwinrt::WinRTValue::I32(0)))
     } else {
-      Ok(DynWinRTValue(results.into_iter().next().unwrap()))
+      Ok(DynWinRTValue(results.into_iter().next()
+        .ok_or_else(|| napi::Error::from_reason("invoke: method returned no results"))?))
     }
   }
 }
@@ -357,8 +342,10 @@ unsafe impl Sync for DynWinRTValue {}
 #[napi]
 impl DynWinRTValue {
   #[napi]
-  pub fn activation_factory(name: String) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::ro_get_activation_factory_2(&HSTRING::from(name)).unwrap())
+  pub fn activation_factory(name: String) -> napi::Result<DynWinRTValue> {
+    let factory = dynwinrt::ro_get_activation_factory_2(&HSTRING::from(&name))
+      .map_err(|e| napi::Error::from_reason(format!("ActivationFactory '{}': {}", name, e.message())))?;
+    Ok(DynWinRTValue(factory))
   }
 
   #[napi]
@@ -445,9 +432,10 @@ impl DynWinRTValue {
   }
 
   #[napi]
-  pub async fn to_promise(&self) -> DynWinRTValue {
-    let v = (&self.0).await.unwrap();
-    DynWinRTValue(v)
+  pub async fn to_promise(&self) -> napi::Result<DynWinRTValue> {
+    let v = (&self.0).await
+      .map_err(|e| napi::Error::from_reason(format!("Async operation failed: {}", e.message())))?;
+    Ok(DynWinRTValue(v))
   }
 
   #[napi]
@@ -462,131 +450,10 @@ impl DynWinRTValue {
   }
 
   #[napi]
-  pub fn call_0(&self, method_index: i32, return_type: &DynWinRTType) -> napi::Result<DynWinRTValue> {
-    let method = dynwinrt::MethodSignature::new(&*TABLE)
-      .add_out(return_type.0.clone())
-      .build(method_index as usize);
-    let obj_raw = self.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("call_0: self is not an Object"))?.as_raw();
-    let result = method.call_dynamic(obj_raw, &[])
-      .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(DynWinRTValue(result.into_iter().next().unwrap()))
-  }
-
-  #[napi]
-  pub fn call_single_out_0(&self, method_index: i32, return_type: &DynWinRTType) -> napi::Result<DynWinRTValue> {
-    let method = dynwinrt::MethodSignature::new(&*TABLE)
-      .add_out(return_type.0.clone())
-      .build(method_index as usize);
-    let obj_raw = self.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("call_single_out_0: self is not an Object"))?.as_raw();
-    let result = method.call_dynamic(obj_raw, &[])
-      .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(DynWinRTValue(result.into_iter().next().unwrap()))
-  }
-
-  #[napi]
-  pub fn call_single_out_1(
-    &self,
-    method_index: i32,
-    return_type: &DynWinRTType,
-    v1: &DynWinRTValue,
-  ) -> napi::Result<DynWinRTValue> {
-    let in_type = TABLE.handle_from_kind(v1.0.get_type_kind());
-    let method = dynwinrt::MethodSignature::new(&*TABLE)
-      .add_in(in_type)
-      .add_out(return_type.0.clone())
-      .build(method_index as usize);
-    let obj_raw = self.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("call_single_out_1: self is not an Object"))?.as_raw();
-    let result = method.call_dynamic(obj_raw, &[v1.0.clone()])
-      .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(DynWinRTValue(result.into_iter().next().unwrap()))
-  }
-
-  /// General-purpose method call accepting any number of arguments.
-  #[napi]
-  pub fn call(
-    &self,
-    method_index: i32,
-    return_type: &DynWinRTType,
-    in_types: Vec<&DynWinRTType>,
-    args: Vec<&DynWinRTValue>,
-  ) -> napi::Result<DynWinRTValue> {
-    let mut method = dynwinrt::MethodSignature::new(&*TABLE);
-    for t in &in_types {
-      method = method.add_in(t.0.clone());
-    }
-    method = method.add_out(return_type.0.clone());
-
-    let obj = match &self.0 {
-      dynwinrt::WinRTValue::Object(o) => o.as_raw(),
-      _ => return Err(napi::Error::from_reason("call() requires an Object value")),
-    };
-
-    let mut iface = dynwinrt::InterfaceSignature::define_from_iinspectable(
-      "",
-      Default::default(),
-      &*TABLE,
-    );
-    let target_index = method_index as usize;
-    for _ in 6..target_index {
-      iface.add_method(dynwinrt::MethodSignature::new(&*TABLE));
-    }
-    iface.add_method(method);
-
-    let winrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
-    let result = iface.methods[target_index]
-      .call_dynamic(obj, &winrt_args)
-      .map_err(|e| napi::Error::from_reason(e.message()))?;
-
-    if result.is_empty() {
-      Ok(DynWinRTValue(dynwinrt::WinRTValue::I32(0)))
-    } else {
-      Ok(DynWinRTValue(result.into_iter().next().unwrap()))
-    }
-  }
-
-  /// Void method call (no return value).
-  #[napi]
-  pub fn call_void(
-    &self,
-    method_index: i32,
-    in_types: Vec<&DynWinRTType>,
-    args: Vec<&DynWinRTValue>,
-  ) -> napi::Result<()> {
-    let mut method = dynwinrt::MethodSignature::new(&*TABLE);
-    for t in &in_types {
-      method = method.add_in(t.0.clone());
-    }
-
-    let obj = match &self.0 {
-      dynwinrt::WinRTValue::Object(o) => o.as_raw(),
-      _ => return Err(napi::Error::from_reason("callVoid() requires an Object value")),
-    };
-
-    let mut iface = dynwinrt::InterfaceSignature::define_from_iinspectable(
-      "",
-      Default::default(),
-      &*TABLE,
-    );
-    let target_index = method_index as usize;
-    for _ in 6..target_index {
-      iface.add_method(dynwinrt::MethodSignature::new(&*TABLE));
-    }
-    iface.add_method(method);
-
-    let winrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
-    iface.methods[target_index]
-      .call_dynamic(obj, &winrt_args)
-      .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(())
-  }
-
-  #[napi]
-  pub fn cast(&self, iid: &WinGUID) -> DynWinRTValue {
-    let result = self.0.cast(&iid.0).unwrap();
-    DynWinRTValue(result)
+  pub fn cast(&self, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
+    let result = self.0.cast(&iid.0)
+      .map_err(|e| napi::Error::from_reason(format!("QueryInterface failed: {}", e.message())))?;
+    Ok(DynWinRTValue(result))
   }
 
   #[napi]
@@ -1061,52 +928,6 @@ impl DynWinRTStruct {
 
 
 // ======================================================================
-// HTTP helpers
-// ======================================================================
-
-#[napi]
-pub struct ComObj(IUnknown);
-unsafe impl Send for ComObj {}
-unsafe impl Sync for ComObj {}
-
-impl Clone for ComObj {
-  fn clone(&self) -> Self {
-    ComObj(self.0.clone())
-  }
-}
-
-#[napi]
-pub fn http_client_get_sync(uri: String) -> Result<ComObj> {
-  use windows::Foundation::Uri;
-  use windows::Web::Http::HttpClient;
-  let uri = Uri::CreateUri(&HSTRING::from(uri))
-    .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
-  let http_client =
-    HttpClient::new().map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
-  let op = http_client
-    .GetStringAsync(&uri)
-    .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
-  let r = op.as_raw();
-  let ukn = unsafe { IUnknown::from_raw_borrowed(&r) }.unwrap();
-  Ok(ComObj(ukn.clone()))
-}
-
-#[napi]
-pub async fn async_progress_hstring_to_promise_string(obj: &ComObj) -> Result<String> {
-  use windows::Web::Http::HttpProgress;
-  let async_op: IAsyncOperationWithProgress<HSTRING, HttpProgress> = obj
-    .0
-    .cast()
-    .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
-
-  let r = async_op
-    .await
-    .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
-
-  Ok(r.to_string())
-}
-
-// ======================================================================
 // System info
 // ======================================================================
 
@@ -1175,46 +996,6 @@ pub fn get_windows_directory() -> napi::Result<String> {
 }
 
 
-#[napi]
-struct ComUri(windows::Foundation::Uri);
-
-#[napi]
-impl ComUri {
-  #[napi]
-  pub fn createTestUri(uri_str: String) -> napi::Result<ComUri> {
-    #[cfg(target_os = "windows")]
-    {
-      use windows::Foundation::Uri;
-      let hstring = HSTRING::from(uri_str);
-      let uri = Uri::CreateUri(&hstring)
-        .map_err(|e| napi::Error::from_reason(format!("Failed to create URI: {:?}", e)))?;
-      Ok(ComUri(uri))
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-      Err(napi::Error::from_reason(
-        "This function is only available on Windows",
-      ))
-    }
-  }
-}
-
-#[napi]
-struct DynWinRTVTable(dynwinrt::InterfaceSignature);
-
-#[napi]
-pub fn get_uri_vtable() -> DynWinRTVTable {
-  DynWinRTVTable(dynwinrt::uri_vtable(&*TABLE))
-}
-
-#[napi]
-pub fn callMethod(vtable: &DynWinRTVTable, index: i32, obj: &ComUri) -> String {
-  let m = &vtable.0.methods[index as usize];
-  let result = m.call_dynamic(obj.0.as_raw(), &[]).unwrap();
-  result[0].as_hstring().unwrap().to_string()
-}
-
 // ======================================================================
 // DynWinRtDelegate — dynamic WinRT delegate (callback) binding
 // ======================================================================
@@ -1235,7 +1016,7 @@ impl DynWinRtDelegate {
     param_types: Vec<&DynWinRTType>,
     #[napi(ts_arg_type = "(...args: DynWinRTValue[]) => void")]
     callback: napi::bindgen_prelude::Function<'static, Vec<DynWinRTValue>, ()>,
-  ) -> Result<DynWinRtDelegate> {
+  ) -> napi::Result<DynWinRtDelegate> {
     let tsfn = callback.build_threadsafe_function()
       .build()?;
 

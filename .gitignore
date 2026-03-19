@@ -27,3 +27,4 @@ target
 
 **/generated
 **/node_modules
+bench-electron/out/
