@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(cd:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(npm install:*)",
+      "Bash(npx electron-vite:*)",
+      "Bash(npx electron:*)"
     ]
   }
 }

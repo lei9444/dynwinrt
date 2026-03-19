@@ -41,6 +41,7 @@
 - [ ] **Error message enrichment**: COM HRESULT errors should include WinRT error message (`IRestrictedErrorInfo`)
 - [ ] **Performance**:
   - `call()` / `callVoid()` create a temporary InterfaceSignature + build Method per call; should cache or remove in favor of `invoke()`
+  - `invoke()` should accept raw JS values (number, string, bool) instead of requiring `DynWinRtValue` wrappers — saves ~0.6-1.6µs per argument (one fewer napi boundary crossing). Needs `in_param_types()` on MethodHandle + type-directed conversion in `bindings/js/src/lib.rs`
 - [ ] **Multi-platform builds**:
   - npm prebuild support (currently only win32-x64-msvc)
   - ARM64 Windows validation
