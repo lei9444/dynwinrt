@@ -729,7 +729,10 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
         out.push('\n');
     }
     for iface in &class.required_interfaces {
-        out.push_str(&generate_interface_registration(iface));
+        // Use _ prefix for registration variable to avoid shadowing the exported wrapper class
+        let mut reg = generate_interface_registration(iface);
+        reg = reg.replacen(&format!("const {} =", iface.name), &format!("const _{} =", iface.name), 1);
+        out.push_str(&reg);
         out.push('\n');
     }
 
@@ -783,59 +786,54 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
         }
     }
 
-    // Instance methods from default + required interfaces, with dedup for name conflicts.
-    // Collect all (interface, method) pairs: default first, then required in order.
-    let mut instance_methods: Vec<(&InterfaceMeta, &MethodMeta)> = Vec::new();
+    // Instance methods: only default interface methods go directly on the class.
+    // Non-default interface methods are accessed via .as(InterfaceWrapper).
     if let Some(ref default_iface) = class.default_interface {
+        let iface_var = default_iface.name.clone();
         for method in &default_iface.methods {
-            instance_methods.push((default_iface, method));
-        }
-    }
-    for req_iface in &class.required_interfaces {
-        for method in &req_iface.methods {
-            instance_methods.push((req_iface, method));
+            out.push('\n');
+            out.push_str(&generate_iface_instance_method(default_iface, &iface_var, method, known_types, &delegate_type_names));
         }
     }
 
-    // Detect camelCase name conflicts across interfaces.
-    // Property getters/setters share a name by design (get_X / put_X → same TS property),
-    // and events (add_/remove_) also pair up, so skip those from dedup.
-    let mut name_counts: HashMap<String, usize> = HashMap::new();
-    for (_iface, method) in &instance_methods {
-        if method.is_property_getter || method.is_property_setter
-            || method.is_event_add || method.is_event_remove {
-            continue;
-        }
-        let camel = to_camel_case(&method.name);
-        *name_counts.entry(camel).or_insert(0) += 1;
-    }
-
-    // Generate methods, appending numeric suffix for duplicates.
-    let mut name_seen: HashMap<String, usize> = HashMap::new();
-    for (iface, method) in &instance_methods {
-        let ts_name_override = if !method.is_property_getter && !method.is_property_setter
-            && !method.is_event_add && !method.is_event_remove
-        {
-            let camel = to_camel_case(&method.name);
-            if name_counts.get(&camel).copied().unwrap_or(0) > 1 {
-                let seen = name_seen.entry(camel.clone()).or_insert(0);
-                *seen += 1;
-                if *seen == 1 {
-                    None // first occurrence keeps original name
-                } else {
-                    Some(format!("{}{}", camel, seen))
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+    // .as() method for accessing non-default interfaces
+    // Uses static from() which does QI cast internally
+    if !class.required_interfaces.is_empty() {
         out.push('\n');
-        out.push_str(&generate_instance_method_invoke(iface, method, known_types, &delegate_type_names, ts_name_override.as_deref()));
+        out.push_str("    as<T>(InterfaceClass: { from(obj: DynWinRtValue): T }): T {\n");
+        out.push_str("        return InterfaceClass.from(this._obj);\n");
+        out.push_str("    }\n");
     }
 
     out.push_str("}\n");
+
+    // Generate inline wrapper classes for required interfaces (non-default)
+    // so they can be used with .as()
+    // Registration variable uses _ prefix to avoid shadowing the exported class name.
+    for req_iface in &class.required_interfaces {
+        if req_iface.iid.is_empty() { continue; }
+        let reg_var = format!("_{}", req_iface.name);
+        out.push('\n');
+        out.push_str(&format!("export class {} {{\n", req_iface.name));
+        out.push_str("    readonly _obj: DynWinRtValue;\n\n");
+        out.push_str("    constructor(obj: DynWinRtValue) {\n");
+        out.push_str("        this._obj = obj;\n");
+        out.push_str("    }\n\n");
+        out.push_str(&format!(
+            "    static from(obj: DynWinRtValue): {} {{\n",
+            req_iface.name
+        ));
+        out.push_str(&format!(
+            "        return new {}(obj.cast(IID_{}));\n",
+            req_iface.name, req_iface.name
+        ));
+        out.push_str("    }\n");
+        for method in &req_iface.methods {
+            out.push('\n');
+            out.push_str(&generate_iface_instance_method(req_iface, &reg_var, method, known_types, &delegate_type_names));
+        }
+        out.push_str("}\n");
+    }
     out
 }
 

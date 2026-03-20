@@ -5,7 +5,6 @@ use crate::value::WinRTValue;
 use super::MetadataTable;
 
 /// A handle to a pre-built method in the MetadataTable's methods arena.
-/// Analogous to TypeHandle but for methods.
 #[derive(Clone)]
 pub struct MethodHandle {
     pub(crate) table: Arc<MetadataTable>,
@@ -21,6 +20,10 @@ impl std::fmt::Debug for MethodHandle {
 }
 
 impl MethodHandle {
+    pub(crate) fn new(table: Arc<MetadataTable>, index: u32) -> Self {
+        MethodHandle { table, index }
+    }
+
     /// Invoke this method on the given COM object with the provided arguments.
     pub fn invoke(
         &self,
@@ -29,6 +32,6 @@ impl MethodHandle {
     ) -> crate::result::Result<Vec<WinRTValue>> {
         self.table
             .invoke_method(self.index, obj, args)
-            .map_err(|e| crate::result::Error::WindowsError(e))
+            .map_err(crate::result::Error::WindowsError)
     }
 }

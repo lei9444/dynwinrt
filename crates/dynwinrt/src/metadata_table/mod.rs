@@ -217,13 +217,13 @@ impl MetadataTable {
     /// Get a MethodHandle by vtable index. O(1) lookup by IID.
     pub(crate) fn method_by_vtable_index(self: &Arc<Self>, iid: &GUID, vtable_index: usize) -> Option<MethodHandle> {
         let arena_index = self.get_method_arena_index_by_vtable(iid, vtable_index)?;
-        Some(MethodHandle { table: Arc::clone(self), index: arena_index })
+        Some(MethodHandle::new(Arc::clone(self), arena_index))
     }
 
     /// Get a MethodHandle by method name. O(1) IID lookup + linear name scan.
     pub(crate) fn method_by_name(self: &Arc<Self>, iid: &GUID, name: &str) -> Option<MethodHandle> {
         let arena_index = self.get_method_arena_index_by_name(iid, name)?;
-        Some(MethodHandle { table: Arc::clone(self), index: arena_index })
+        Some(MethodHandle::new(Arc::clone(self), arena_index))
     }
 
     // -----------------------------------------------------------------------
@@ -557,5 +557,58 @@ mod tests {
         assert!((pos.Longitude - (-122.131)).abs() < 1e-6);
         assert!((pos.Altitude - 100.0).abs() < 1e-6);
         Ok(())
+    }
+
+    #[test]
+    fn e2e_runtime_class_auto_qi() {
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+        use windows_core::{IUnknown, Interface, h};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let table = MetadataTable::new();
+
+        // Register IUriRuntimeClass (default interface) — alphabetical vtable order
+        let uri_iid = GUID::from_u128(0x9E365E57_48B2_4160_956F_C7385120BBFC);
+        let iuri = table.register_interface("IUriRuntimeClass_test", uri_iid)
+            .add_method("get_AbsoluteUri", MethodSignature::new(&table).add_out(table.hstring()))
+            .add_method("get_DisplayUri", MethodSignature::new(&table).add_out(table.hstring()))
+            .add_method("get_Domain", MethodSignature::new(&table).add_out(table.hstring()))
+            .add_method("get_Extension", MethodSignature::new(&table).add_out(table.hstring()))
+            .add_method("get_Fragment", MethodSignature::new(&table).add_out(table.hstring()))
+            .add_method("get_Host", MethodSignature::new(&table).add_out(table.hstring()));
+
+        // Register IUriRuntimeClassWithAbsoluteCanonicalUri (second interface)
+        let uri2_iid = GUID::from_u128(0x758D9661_221C_480F_A339_50656673F46F);
+        let iuri2 = table.register_interface("IUriRuntimeClassWithAbsoluteCanonicalUri_test", uri2_iid)
+            .add_method("get_AbsoluteCanonicalUri", MethodSignature::new(&table).add_out(table.hstring()))
+            .add_method("get_DisplayIri", MethodSignature::new(&table).add_out(table.hstring()));
+
+        // Verify direct interface call works first
+        let uri = windows::Foundation::Uri::CreateUri(h!("https://www.example.com/path?q=1"))
+            .unwrap();
+        let mut direct_ptr = std::ptr::null_mut();
+        unsafe { uri.cast::<IUnknown>().unwrap().query(&uri_iid, &mut direct_ptr).ok().unwrap(); }
+        let direct_host = iuri.method_by_name("get_Host").unwrap()
+            .invoke(direct_ptr, &[]).unwrap();
+        assert_eq!(direct_host[0].as_hstring().unwrap().to_string(), "www.example.com");
+
+        // .as() pattern: cast to specific interface, then call methods
+        let uri_obj = WinRTValue::Object(uri.cast::<IUnknown>().unwrap());
+
+        // .as(IUri) → QI to default interface, then invoke
+        let uri_as_iuri = uri_obj.cast(&uri_iid).unwrap();
+        let host = iuri.method_by_name("get_Host").unwrap()
+            .invoke(uri_as_iuri.as_object().unwrap().as_raw(), &[]).unwrap();
+        assert_eq!(host[0].as_hstring().unwrap().to_string(), "www.example.com");
+
+        let domain = iuri.method_by_name("get_Domain").unwrap()
+            .invoke(uri_as_iuri.as_object().unwrap().as_raw(), &[]).unwrap();
+        assert_eq!(domain[0].as_hstring().unwrap().to_string(), "example.com");
+
+        // .as(IUri2) → QI to second interface, then invoke
+        let uri_as_iuri2 = uri_obj.cast(&uri2_iid).unwrap();
+        let canonical = iuri2.method_by_name("get_AbsoluteCanonicalUri").unwrap()
+            .invoke(uri_as_iuri2.as_object().unwrap().as_raw(), &[]).unwrap();
+        assert!(canonical[0].as_hstring().unwrap().to_string().contains("example.com"));
     }
 }
