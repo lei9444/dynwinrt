@@ -97,17 +97,29 @@ jobs:
           name: winrt-meta-arm64
           path: tools/winrt-meta/npm/bin/arm64
 
+      # Determine npm tag: prerelease versions get "alpha"/"beta"/etc, releases get "latest"
+      - name: Determine npm tag
+        id: npm-tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "tag=${VERSION#*-}" | sed 's/\..*//' >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+
       # Publish dynwinrt-js
       - name: Publish @lei9444/dynwinrt-js
         working-directory: bindings/js
-        run: npm publish
+        run: npm publish --tag ${{ steps.npm-tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Publish winrt-meta
       - name: Publish @lei9444/winrt-meta
         working-directory: tools/winrt-meta/npm
-        run: npm publish
+        run: npm publish --tag ${{ steps.npm-tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
