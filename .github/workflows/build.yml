@@ -6,6 +6,7 @@ env:
 on:
   push:
     branches: [main, leilzh/*]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -66,6 +67,49 @@ jobs:
             bindings/js/dist/dynwinrt-js.win32-arm64-msvc.node
             bindings/js/dist/index.js
             bindings/js/dist/index.d.ts
+
+  # Publish to GitHub Packages (only on tag push like v0.1.0)
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    needs: [winrt-meta-x64, winrt-meta-arm64, dynwinrt-js]
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+
+      # Download all build artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: dynwinrt-js
+          path: bindings/js/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: winrt-meta-x64
+          path: tools/winrt-meta/npm/bin/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: winrt-meta-arm64
+          path: tools/winrt-meta/npm/bin/arm64
+
+      # Publish dynwinrt-js
+      - name: Publish @lei9444/dynwinrt-js
+        working-directory: bindings/js
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publish winrt-meta
+      - name: Publish @lei9444/winrt-meta
+        working-directory: tools/winrt-meta/npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Sample: ready-to-use test kit
   sample:

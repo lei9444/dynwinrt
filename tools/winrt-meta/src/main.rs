@@ -10,7 +10,20 @@ use winrt_meta::types::TypeMeta;
 
 #[derive(Parser)]
 #[command(name = "winrt-meta")]
-#[command(about = "Generate language bindings from WinRT metadata (.winmd) files")]
+#[command(about = "Generate typed language bindings from WinRT metadata (.winmd) files")]
+#[command(long_about = "winrt-meta reads .winmd metadata and generates typed TypeScript bindings\n\
+    that use dynwinrt-js at runtime to call Windows Runtime APIs dynamically.\n\n\
+    It auto-detects Windows SDK metadata and discovers sibling .winmd files\n\
+    in the same directory, so you typically only need to point at one file.")]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m\n\
+    # Generate all namespaces from a WinAppSDK metadata folder\n\
+    winrt-meta generate --folder C:\\Users\\you\\.winapp\\packages\\Microsoft.WindowsAppSDK.AI.1.8.39\\metadata\n\n\
+    # Generate a single namespace (siblings auto-discovered)\n\
+    winrt-meta generate --winmd path\\to\\Microsoft.Windows.AI.Imaging.winmd --namespace Microsoft.Windows.AI.Imaging\n\n\
+    # Generate a single class\n\
+    winrt-meta generate --namespace Windows.Foundation --class Uri\n\n\
+    # Custom output directory\n\
+    winrt-meta generate --folder path\\to\\metadata --output ./src/generated")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -18,33 +31,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate TypeScript or Python bindings from .winmd files
+    /// Generate TypeScript bindings from .winmd files
+    #[command(long_about = "Parse .winmd metadata and generate typed TypeScript files.\n\n\
+        The tool automatically:\n\
+        - Detects Windows.winmd from the Windows SDK install path\n\
+        - Discovers sibling .winmd files in the same directory as --winmd\n\
+        - Resolves transitive type dependencies across namespaces\n\
+        - Filters out Windows.* system namespaces when --namespace is omitted")]
     Generate {
-        /// Path(s) to .winmd metadata files, separated by ';'
-        /// If omitted, auto-detects Windows.winmd from Windows SDK install path.
-        #[arg(long)]
+        /// Path(s) to .winmd metadata files, separated by ';'.
+        /// Sibling .winmd files in the same directory are auto-discovered.
+        /// If omitted, auto-detects Windows.winmd from Windows SDK.
+        #[arg(long, value_name = "PATH")]
         winmd: Option<String>,
 
-        /// Directory containing .winmd files. All .winmd files in this directory
-        /// will be loaded and all non-Windows namespaces will be generated.
-        #[arg(long)]
+        /// Directory containing .winmd files.
+        /// All .winmd files in this directory will be loaded.
+        /// When --namespace is omitted, generates all non-Windows namespaces.
+        #[arg(long, value_name = "DIR")]
         folder: Option<String>,
 
-        /// Filter by namespace (e.g. "Windows.Foundation").
-        /// If omitted, generates bindings for all namespaces found in the winmd files.
-        #[arg(long)]
+        /// Generate only this namespace (e.g. "Microsoft.Windows.AI.Imaging").
+        /// If omitted, generates all non-Windows namespaces found in the winmd files.
+        #[arg(long, value_name = "NS")]
         namespace: Option<String>,
 
-        /// Generate bindings for a specific class only
-        #[arg(long, name = "class")]
+        /// Generate bindings for a single class (requires --namespace)
+        #[arg(long, name = "class", value_name = "NAME")]
         class_name: Option<String>,
 
-        /// Target language: "ts" (TypeScript) or "py" (Python)
-        #[arg(long, default_value = "ts")]
+        /// Target language
+        #[arg(long, default_value = "ts", value_parser = ["ts"])]
         lang: String,
 
-        /// Output directory for generated files
-        #[arg(long, default_value = "./generated")]
+        /// Output directory for generated .ts files
+        #[arg(long, default_value = "./generated", value_name = "DIR")]
         output: String,
     },
 }

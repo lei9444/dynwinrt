@@ -1,0 +1,31 @@
+{
+  "name": "@lei9444/winrt-meta",
+  "version": "0.1.0-alpha.0",
+  "description": "Generate TypeScript bindings from WinRT metadata (.winmd) files for use with dynwinrt-js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lei9444/dynwinrt"
+  },
+  "keywords": [
+    "winrt",
+    "winmd",
+    "codegen",
+    "typescript",
+    "windows",
+    "winappsdk"
+  ],
+  "os": [
+    "win32"
+  ],
+  "bin": {
+    "winrt-meta": "./bin/winrt-meta.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  }
+}
