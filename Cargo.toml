@@ -2,7 +2,13 @@
 members = [
     "crates/dynwinrt",
     "bindings/js",
+    "bindings/js/static-bench-rust",
     "bindings/py",
     "tools/winrt-meta",
 ]
 resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

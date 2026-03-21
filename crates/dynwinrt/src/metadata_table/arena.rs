@@ -203,6 +203,11 @@ impl MetadataTable {
         methods[index as usize].call_dynamic(obj, args)
     }
 
+    /// Read-lock the methods arena. Used by fast getter paths on MethodHandle.
+    pub(crate) fn methods_read(&self) -> std::sync::RwLockReadGuard<'_, Vec<crate::signature::Method>> {
+        self.methods.read().unwrap()
+    }
+
     pub(super) fn get_method_arena_index_by_vtable(
         &self, iid: &GUID, vtable_index: usize,
     ) -> Option<u32> {
