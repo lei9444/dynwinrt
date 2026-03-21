@@ -25,7 +25,13 @@ enum Commands {
         #[arg(long)]
         winmd: Option<String>,
 
-        /// Filter by namespace (e.g. "Windows.Foundation")
+        /// Directory containing .winmd files. All .winmd files in this directory
+        /// will be loaded and all non-Windows namespaces will be generated.
+        #[arg(long)]
+        folder: Option<String>,
+
+        /// Filter by namespace (e.g. "Windows.Foundation").
+        /// If omitted, generates bindings for all namespaces found in the winmd files.
         #[arg(long)]
         namespace: Option<String>,
 
@@ -49,6 +55,7 @@ fn main() {
     match cli.command {
         Commands::Generate {
             winmd,
+            folder,
             namespace,
             class_name,
             lang,
@@ -59,155 +66,214 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Resolve winmd path: use provided value or auto-detect Windows SDK
-            let winmd = match winmd {
-                Some(w) => {
-                    if w.contains("Windows.winmd") {
-                        w
-                    } else if let Some(sdk_winmd) = find_windows_sdk_winmd() {
-                        eprintln!("Auto-detected Windows SDK: {}", sdk_winmd);
-                        format!("{};{}", w, sdk_winmd)
-                    } else {
-                        w
+            // Collect winmd paths from --folder and/or --winmd
+            let mut winmd_parts: Vec<String> = Vec::new();
+
+            if let Some(ref dir) = folder {
+                let dir_path = Path::new(dir);
+                if !dir_path.is_dir() {
+                    eprintln!("--folder path is not a directory: {}", dir);
+                    std::process::exit(1);
+                }
+                if let Ok(entries) = fs::read_dir(dir_path) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("winmd")) {
+                            eprintln!("Loading winmd from folder: {}", path.display());
+                            winmd_parts.push(path.to_string_lossy().to_string());
+                        }
                     }
                 }
-                None => match find_windows_sdk_winmd() {
-                    Some(path) => {
-                        eprintln!("Auto-detected Windows SDK: {}", path);
-                        path
-                    }
-                    None => {
-                        eprintln!("Could not auto-detect Windows.winmd. Please provide --winmd.");
-                        std::process::exit(1);
-                    }
-                },
-            };
+                if winmd_parts.is_empty() {
+                    eprintln!("No .winmd files found in folder: {}", dir);
+                    std::process::exit(1);
+                }
+            }
+
+            if let Some(ref w) = winmd {
+                winmd_parts.extend(w.split(';').filter(|s| !s.is_empty()).map(String::from));
+            }
+
+            // Auto-detect Windows SDK if not already included
+            let has_windows_winmd = winmd_parts.iter().any(|p| p.contains("Windows.winmd"));
+            if !has_windows_winmd {
+                if let Some(sdk_winmd) = find_windows_sdk_winmd() {
+                    eprintln!("Auto-detected Windows SDK: {}", sdk_winmd);
+                    winmd_parts.push(sdk_winmd);
+                } else if folder.is_none() && winmd.is_none() {
+                    eprintln!("Could not auto-detect Windows.winmd. Please provide --winmd or --folder.");
+                    std::process::exit(1);
+                }
+            }
+
+            let winmd_joined = winmd_parts.join(";");
+
+            // Auto-discover sibling .winmd files in the same directories
+            let winmd = meta::expand_winmd_paths(&winmd_joined);
 
             let output_dir = Path::new(&output);
             fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
-            let classes = if let Some(ref cls) = class_name {
+            if let Some(ref cls) = class_name {
+                // Single class mode
                 let ns = namespace
                     .as_deref()
                     .expect("--namespace is required when --class is specified");
-                match meta::parse_class(&winmd, ns, cls) {
+                let classes = match meta::parse_class(&winmd, ns, cls) {
                     Some(c) => vec![c],
                     None => {
                         eprintln!("Class {}.{} not found in {}", ns, cls, winmd);
                         std::process::exit(1);
                     }
-                }
-            } else if let Some(ref ns) = namespace {
-                meta::parse_namespace(&winmd, ns)
+                };
+                generate_for_types(&winmd, output_dir, classes, Vec::new(), Vec::new());
             } else {
-                eprintln!("Either --namespace or --class (with --namespace) must be specified.");
-                std::process::exit(1);
-            };
-
-            let interfaces = if let Some(ref ns) = namespace {
-                meta::parse_interfaces(&winmd, ns)
-            } else {
-                Vec::new()
-            };
-
-            let enums = if let Some(ref ns) = namespace {
-                meta::parse_enums(&winmd, ns)
-            } else {
-                Vec::new()
-            };
-
-            // Resolve transitive dependencies (recursively discovers all referenced types)
-            let deps = meta::resolve_dependencies(&winmd, &classes, &interfaces, &enums);
-            let mut all_classes = classes;
-            let mut all_interfaces = interfaces;
-            let mut all_enums = enums;
-            all_classes.extend(deps.classes);
-            all_interfaces.extend(deps.interfaces);
-            all_enums.extend(deps.enums);
-
-            // Build set of known type names (types that will have generated .ts files)
-            let mut known_types: HashSet<String> = HashSet::new();
-            for c in &all_classes { known_types.insert(c.name.clone()); }
-            for i in &all_interfaces { known_types.insert(i.name.clone()); }
-            for e in &all_enums {
-                if let TypeMeta::Enum { name, .. } = e { known_types.insert(name.clone()); }
-            }
-
-            // Identify delegate types (for import filtering)
-            let delegate_type_names: std::collections::HashSet<String> = all_interfaces.iter()
-                .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
-                .map(|i| i.name.clone())
-                .collect();
-
-            // Generate interface files
-            for iface in &all_interfaces {
-                let ts_code = typescript::generate_interface(iface, &known_types, &delegate_type_names);
-                let filename = format!("{}.ts", iface.name);
-                let filepath = output_dir.join(&filename);
-                fs::write(&filepath, &ts_code).expect("Failed to write generated file");
-                println!("Generated {}", filepath.display());
-            }
-
-            // Generate enum files
-            for en in &all_enums {
-                if let TypeMeta::Enum { name, .. } = en {
-                    if let Some(ts_code) = typescript::generate_enum(en) {
-                        let filename = format!("{}.ts", name);
-                        let filepath = output_dir.join(&filename);
-                        fs::write(&filepath, &ts_code).expect("Failed to write generated file");
-                        println!("Generated {}", filepath.display());
+                // Determine which namespaces to generate
+                let namespaces = match namespace {
+                    Some(ref ns) => vec![ns.clone()],
+                    None => {
+                        let all_ns = meta::list_namespaces(&winmd);
+                        // Filter out Windows.* system namespaces (they come from Windows.winmd)
+                        // Only keep non-Windows namespaces (the user's WinAppSDK types)
+                        let filtered: Vec<String> = all_ns
+                            .into_iter()
+                            .filter(|ns| !ns.starts_with("Windows."))
+                            .collect();
+                        if filtered.is_empty() {
+                            eprintln!("No non-Windows namespaces found. Use --namespace to specify one.");
+                            std::process::exit(1);
+                        }
+                        eprintln!("Discovered {} namespace(s) to generate:", filtered.len());
+                        for ns in &filtered {
+                            eprintln!("  {}", ns);
+                        }
+                        filtered
                     }
+                };
+
+                let mut total_classes = 0usize;
+                let mut total_interfaces = 0usize;
+                let mut total_enums = 0usize;
+
+                for ns in &namespaces {
+                    let classes = meta::parse_namespace(&winmd, ns);
+                    let interfaces = meta::parse_interfaces(&winmd, ns);
+                    let enums = meta::parse_enums(&winmd, ns);
+
+                    let (nc, ni, ne) = generate_for_types(
+                        &winmd, output_dir, classes, interfaces, enums,
+                    );
+                    total_classes += nc;
+                    total_interfaces += ni;
+                    total_enums += ne;
                 }
+
+                // Generate index.ts combining everything
+                if namespaces.len() >= 1 && (total_classes + total_interfaces + total_enums) > 1 {
+                    // Re-collect all types for index generation
+                    let mut all_classes = Vec::new();
+                    let mut all_interfaces = Vec::new();
+                    let mut all_enums = Vec::new();
+                    for ns in &namespaces {
+                        all_classes.extend(meta::parse_namespace(&winmd, ns));
+                        all_interfaces.extend(meta::parse_interfaces(&winmd, ns));
+                        all_enums.extend(meta::parse_enums(&winmd, ns));
+                    }
+                    let deps = meta::resolve_dependencies(&winmd, &all_classes, &all_interfaces, &all_enums);
+                    all_classes.extend(deps.classes);
+                    all_interfaces.extend(deps.interfaces);
+                    all_enums.extend(deps.enums);
+
+                    let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
+                    let index_path = output_dir.join("index.ts");
+                    fs::write(&index_path, &index_code).expect("Failed to write index.ts");
+                    println!("Generated {}", index_path.display());
+                }
+
+                println!(
+                    "Done. {} class(es) + {} interface(s) + {} enum(s) generated in {}",
+                    total_classes, total_interfaces, total_enums, output_dir.display()
+                );
             }
-
-            // Generate class files
-            for class in &all_classes {
-                let ts_code = typescript::generate_class(class, &known_types, &delegate_type_names);
-                let filename = format!("{}.ts", class.name);
-                let filepath = output_dir.join(&filename);
-                fs::write(&filepath, &ts_code).expect("Failed to write generated file");
-                println!("Generated {}", filepath.display());
-            }
-
-
-
-            // Generate index.ts
-            let total = all_classes.len() + all_interfaces.len() + all_enums.len();
-            if namespace.is_some() && total > 1 {
-                let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
-                let index_path = output_dir.join("index.ts");
-                fs::write(&index_path, &index_code).expect("Failed to write index.ts");
-                println!("Generated {}", index_path.display());
-            }
-
-            println!(
-                "Done. {} class(es) + {} interface(s) + {} enum(s) generated in {}",
-                all_classes.len(),
-                all_interfaces.len(),
-                all_enums.len(),
-                output_dir.display()
-            );
         }
     }
 }
 
+/// Generate TypeScript files for a set of types (classes, interfaces, enums)
+/// plus their transitive dependencies. Returns (class_count, interface_count, enum_count).
+fn generate_for_types(
+    winmd: &str,
+    output_dir: &Path,
+    classes: Vec<meta::ClassMeta>,
+    interfaces: Vec<meta::InterfaceMeta>,
+    enums: Vec<TypeMeta>,
+) -> (usize, usize, usize) {
+    let deps = meta::resolve_dependencies(winmd, &classes, &interfaces, &enums);
+    let mut all_classes = classes;
+    let mut all_interfaces = interfaces;
+    let mut all_enums = enums;
+    all_classes.extend(deps.classes);
+    all_interfaces.extend(deps.interfaces);
+    all_enums.extend(deps.enums);
+
+    // Build set of known type names
+    let mut known_types: HashSet<String> = HashSet::new();
+    for c in &all_classes { known_types.insert(c.name.clone()); }
+    for i in &all_interfaces { known_types.insert(i.name.clone()); }
+    for e in &all_enums {
+        if let TypeMeta::Enum { name, .. } = e { known_types.insert(name.clone()); }
+    }
+
+    // Identify delegate types
+    let delegate_type_names: HashSet<String> = all_interfaces.iter()
+        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
+        .map(|i| i.name.clone())
+        .collect();
+
+    for iface in &all_interfaces {
+        let ts_code = typescript::generate_interface(iface, &known_types, &delegate_type_names);
+        let filename = format!("{}.ts", iface.name);
+        let filepath = output_dir.join(&filename);
+        fs::write(&filepath, &ts_code).expect("Failed to write generated file");
+        println!("Generated {}", filepath.display());
+    }
+
+    for en in &all_enums {
+        if let TypeMeta::Enum { name, .. } = en {
+            if let Some(ts_code) = typescript::generate_enum(en) {
+                let filename = format!("{}.ts", name);
+                let filepath = output_dir.join(&filename);
+                fs::write(&filepath, &ts_code).expect("Failed to write generated file");
+                println!("Generated {}", filepath.display());
+            }
+        }
+    }
+
+    for class in &all_classes {
+        let ts_code = typescript::generate_class(class, &known_types, &delegate_type_names);
+        let filename = format!("{}.ts", class.name);
+        let filepath = output_dir.join(&filename);
+        fs::write(&filepath, &ts_code).expect("Failed to write generated file");
+        println!("Generated {}", filepath.display());
+    }
+
+    (all_classes.len(), all_interfaces.len(), all_enums.len())
+}
+
 /// Find Windows SDK Windows.winmd by scanning the standard install location.
-/// Returns the path to the latest version's Windows.winmd, if found.
 fn find_windows_sdk_winmd() -> Option<String> {
     let base = Path::new(r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata");
     if !base.exists() {
         return None;
     }
-    // Find all version directories and pick the latest (lexicographic sort works for version strings)
     let mut versions: Vec<_> = fs::read_dir(base)
         .ok()?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|name| name.starts_with("10.")) // Only version directories like "10.0.26100.0"
+        .filter(|name| name.starts_with("10."))
         .collect();
     versions.sort();
-    // Check from latest to oldest
     for version in versions.iter().rev() {
         let winmd_path = base.join(version).join("Windows.winmd");
         if winmd_path.exists() {
