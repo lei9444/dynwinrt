@@ -207,6 +207,57 @@ pub struct Method {
 }
 
 impl Method {
+    // --- Fast getter paths: zero Vec/WinRTValue allocation ---
+
+    /// Getter → i32 (0 in, 1 out). Writes directly to stack i32.
+    pub fn call_getter_i32(
+        &self,
+        obj: *mut std::ffi::c_void,
+    ) -> windows_core::Result<i32> {
+        let mut out: i32 = 0;
+        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut i32 as *mut std::ffi::c_void);
+        hr.ok()?;
+        Ok(out)
+    }
+
+    /// Getter → bool (0 in, 1 out). Writes directly to stack bool.
+    pub fn call_getter_bool(
+        &self,
+        obj: *mut std::ffi::c_void,
+    ) -> windows_core::Result<bool> {
+        let mut out: i32 = 0; // WinRT bool is i32 on ABI
+        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut i32 as *mut std::ffi::c_void);
+        hr.ok()?;
+        Ok(out != 0)
+    }
+
+    /// Getter → HSTRING (0 in, 1 out). Writes directly to stack HSTRING ptr.
+    pub fn call_getter_hstring(
+        &self,
+        obj: *mut std::ffi::c_void,
+    ) -> windows_core::Result<windows_core::HSTRING> {
+        // HSTRING is a pointer-sized handle on ABI. Let WinRT write it directly.
+        let mut out = windows_core::HSTRING::new();
+        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut windows_core::HSTRING as *mut std::ffi::c_void);
+        hr.ok()?;
+        Ok(out)
+    }
+
+    /// Getter → COM object (0 in, 1 out). Writes directly to stack pointer.
+    pub fn call_getter_object(
+        &self,
+        obj: *mut std::ffi::c_void,
+    ) -> windows_core::Result<WinRTValue> {
+        let mut out: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut _ as *mut std::ffi::c_void);
+        hr.ok()?;
+        if out.is_null() {
+            Ok(WinRTValue::Null)
+        } else {
+            Ok(WinRTValue::Object(unsafe { windows_core::IUnknown::from_raw(out) }))
+        }
+    }
+
     pub fn call_dynamic(
         &self,
         obj: *mut std::ffi::c_void,

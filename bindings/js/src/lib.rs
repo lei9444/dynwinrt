@@ -1,4 +1,5 @@
 #![deny(clippy::all)]
+#![allow(clippy::missing_safety_doc)]
 
 use std::sync::Arc;
 
@@ -327,6 +328,68 @@ impl DynWinRTMethodHandle {
       Ok(DynWinRTValue(results.into_iter().next()
         .ok_or_else(|| napi::Error::from_reason("invoke: method returned no results"))?))
     }
+  }
+
+  // --- Fast paths: skip Vec alloc + skip DynWinRTValue wrapping for result ---
+
+  /// Getter → string (0 args, returns JS string directly, zero Vec allocation)
+  #[napi]
+  pub fn get_string(&self, obj: &DynWinRTValue) -> napi::Result<String> {
+    let raw = obj.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_string: not an Object"))?.as_raw();
+    let hs = self.0.call_getter_hstring(raw)
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(hs.to_string())
+  }
+
+  /// Getter → i32 (0 args, returns JS number directly, zero Vec allocation)
+  #[napi]
+  pub fn get_i32(&self, obj: &DynWinRTValue) -> napi::Result<i32> {
+    let raw = obj.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_i32: not an Object"))?.as_raw();
+    self.0.call_getter_i32(raw)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  /// Getter → bool (0 args, returns JS boolean directly, zero Vec allocation)
+  #[napi]
+  pub fn get_bool(&self, obj: &DynWinRTValue) -> napi::Result<bool> {
+    let raw = obj.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_bool: not an Object"))?.as_raw();
+    self.0.call_getter_bool(raw)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  /// Getter → DynWinRTValue (0 args, returns wrapped object, zero Vec allocation)
+  #[napi]
+  pub fn get_obj(&self, obj: &DynWinRTValue) -> napi::Result<DynWinRTValue> {
+    let raw = obj.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_obj: not an Object"))?.as_raw();
+    self.0.call_getter_object(raw)
+      .map(DynWinRTValue)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  /// 1-arg invoke with hstring input → DynWinRTValue result
+  #[napi]
+  pub fn invoke_hstring(&self, obj: &DynWinRTValue, arg: String) -> napi::Result<DynWinRTValue> {
+    let raw = obj.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("invoke_hstring: not an Object"))?.as_raw();
+    let results = self.0.invoke(raw, &[dynwinrt::WinRTValue::HString(HSTRING::from(arg))])
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(DynWinRTValue(results.into_iter().next()
+      .ok_or_else(|| napi::Error::from_reason("invoke_hstring: no result"))?))
+  }
+
+  /// 1-arg invoke with i32 input → DynWinRTValue result
+  #[napi]
+  pub fn invoke_i32(&self, obj: &DynWinRTValue, arg: i32) -> napi::Result<DynWinRTValue> {
+    let raw = obj.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("invoke_i32: not an Object"))?.as_raw();
+    let results = self.0.invoke(raw, &[dynwinrt::WinRTValue::I32(arg)])
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(DynWinRTValue(results.into_iter().next()
+      .ok_or_else(|| napi::Error::from_reason("invoke_i32: no result"))?))
   }
 }
 
@@ -997,6 +1060,106 @@ pub fn get_windows_directory() -> napi::Result<String> {
 
 
 // ======================================================================
+// Rust static benchmark — windows crate direct projection (no dynwinrt)
+// ======================================================================
+
+#[napi]
+pub struct RustStaticBench;
+
+fn map_win_err(e: windows::core::Error) -> napi::Error {
+  napi::Error::from_reason(e.message())
+}
+
+/// Pre-created Uri for static benchmark (stores typed interface, no QI on access).
+#[napi]
+pub struct StaticUri(windows::Foundation::Uri);
+unsafe impl Send for StaticUri {}
+unsafe impl Sync for StaticUri {}
+
+/// Pre-created opaque COM object for static benchmark (factory results).
+#[napi]
+pub struct StaticObj(windows::core::IInspectable);
+unsafe impl Send for StaticObj {}
+unsafe impl Sync for StaticObj {}
+
+#[napi]
+impl RustStaticBench {
+  // --- Uri ---
+
+  #[napi]
+  pub fn uri_create(url: String) -> napi::Result<StaticUri> {
+    let uri = windows::Foundation::Uri::CreateUri(&HSTRING::from(url)).map_err(map_win_err)?;
+    Ok(StaticUri(uri))
+  }
+
+  #[napi]
+  pub fn uri_get_host(url: String) -> napi::Result<String> {
+    let uri = windows::Foundation::Uri::CreateUri(&HSTRING::from(url)).map_err(map_win_err)?;
+    Ok(uri.Host().map_err(map_win_err)?.to_string())
+  }
+
+  #[napi]
+  pub fn uri_host_from_obj(obj: &StaticUri) -> napi::Result<String> {
+    Ok(obj.0.Host().map_err(map_win_err)?.to_string())
+  }
+
+  #[napi]
+  pub fn uri_port_from_obj(obj: &StaticUri) -> napi::Result<i32> {
+    Ok(obj.0.Port().map_err(map_win_err)?)
+  }
+
+  #[napi]
+  pub fn uri_suspicious_from_obj(obj: &StaticUri) -> napi::Result<bool> {
+    Ok(obj.0.Suspicious().map_err(map_win_err)?)
+  }
+
+  #[napi]
+  pub fn uri_combine(obj: &StaticUri, relative: String) -> napi::Result<StaticUri> {
+    let result = obj.0.CombineUri(&HSTRING::from(relative)).map_err(map_win_err)?;
+    Ok(StaticUri(result))
+  }
+
+  #[napi]
+  pub fn uri_create_with_relative(base: String, relative: String) -> napi::Result<StaticUri> {
+    let uri = windows::Foundation::Uri::CreateWithRelativeUri(
+      &HSTRING::from(base), &HSTRING::from(relative),
+    ).map_err(map_win_err)?;
+    Ok(StaticUri(uri))
+  }
+
+  // --- PropertyValue ---
+
+  #[napi]
+  pub fn pv_create_i32(value: i32) -> napi::Result<StaticObj> {
+    Ok(StaticObj(windows::Foundation::PropertyValue::CreateInt32(value).map_err(map_win_err)?.into()))
+  }
+
+  #[napi]
+  pub fn pv_create_f64(value: f64) -> napi::Result<StaticObj> {
+    Ok(StaticObj(windows::Foundation::PropertyValue::CreateDouble(value).map_err(map_win_err)?.into()))
+  }
+
+  #[napi]
+  pub fn pv_create_bool(value: bool) -> napi::Result<StaticObj> {
+    Ok(StaticObj(windows::Foundation::PropertyValue::CreateBoolean(value).map_err(map_win_err)?.into()))
+  }
+
+  #[napi]
+  pub fn pv_create_string(value: String) -> napi::Result<StaticObj> {
+    Ok(StaticObj(windows::Foundation::PropertyValue::CreateString(&HSTRING::from(value)).map_err(map_win_err)?.into()))
+  }
+
+  // --- Geopoint ---
+
+  #[napi]
+  pub fn geopoint_create(lat: f64, lon: f64, alt: f64) -> napi::Result<StaticObj> {
+    use windows::Devices::Geolocation::{BasicGeoposition, Geopoint};
+    let pos = BasicGeoposition { Latitude: lat, Longitude: lon, Altitude: alt };
+    Ok(StaticObj(Geopoint::Create(pos).map_err(map_win_err)?.into()))
+  }
+}
+
+// ======================================================================
 // DynWinRtDelegate — dynamic WinRT delegate (callback) binding
 // ======================================================================
 
@@ -1039,5 +1202,39 @@ impl DynWinRtDelegate {
   pub fn to_value(&self) -> DynWinRTValue {
     DynWinRTValue(self.0.clone())
   }
+}
+
+// ======================================================================
+// Raw N-API fast getters — bypass napi-rs macro layer entirely
+// ======================================================================
+//
+// These use napi_sys to unwrap napi-rs managed objects directly,
+// call dynwinrt's zero-alloc getter path, and return JS primitives.
+// Registered as standalone functions: rawGetString(method, obj) → string
+
+// Standalone #[napi] functions — same zero-alloc getter path as methods,
+// but as free functions for benchmark comparison.
+// napi-rs overhead here: unwrap 2 class refs + return primitive.
+
+/// rawGetString(methodHandle, objValue) → string
+#[napi]
+pub fn raw_get_string(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> napi::Result<String> {
+    let raw = match &obj.0 {
+        dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+        _ => return Err(napi::Error::from_reason("not an Object")),
+    };
+    Ok(method.0.call_getter_hstring(raw)
+        .map_err(|e| napi::Error::from_reason(e.message()))?.to_string())
+}
+
+/// rawGetI32(methodHandle, objValue) → number
+#[napi]
+pub fn raw_get_i32(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> napi::Result<i32> {
+    let raw = match &obj.0 {
+        dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+        _ => return Err(napi::Error::from_reason("not an Object")),
+    };
+    method.0.call_getter_i32(raw)
+        .map_err(|e| napi::Error::from_reason(e.message()))
 }
 
