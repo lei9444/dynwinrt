@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use windows_metadata::{HasAttributes, reader};
 
@@ -68,6 +69,24 @@ pub struct ClassMeta {
     pub factory_interfaces: Vec<InterfaceMeta>,
     pub static_interfaces: Vec<InterfaceMeta>,
     pub has_default_constructor: bool,
+}
+
+/// List all unique namespaces found in the given winmd files.
+pub fn list_namespaces(winmd_paths: &str) -> Vec<String> {
+    let index = match load_index(winmd_paths) {
+        Some(idx) => idx,
+        None => return Vec::new(),
+    };
+    let mut namespaces: HashSet<String> = HashSet::new();
+    for def in index.all() {
+        let ns = def.namespace();
+        if !ns.is_empty() {
+            namespaces.insert(ns.to_string());
+        }
+    }
+    let mut sorted: Vec<String> = namespaces.into_iter().collect();
+    sorted.sort();
+    sorted
 }
 
 /// Parse a WinMD file and extract metadata for a single RuntimeClass.
@@ -263,16 +282,22 @@ pub fn resolve_dependencies(
                 "interface" => {
                     if let Some(iface) = parse_interface(&index, ns, name) {
                         new_interfaces.push(iface);
+                    } else {
+                        eprintln!("warning: interface {}.{} not found in loaded winmd files", ns, name);
                     }
                 }
                 "class" => {
                     if let Some(class) = parse_class_from_index(&index, ns, name) {
                         new_classes.push(class);
+                    } else {
+                        eprintln!("warning: class {}.{} not found in loaded winmd files", ns, name);
                     }
                 }
                 "enum" => {
                     if let Some(def) = index.get(ns, name).next() {
                         dep_enums.push(parse_enum_def(&def));
+                    } else {
+                        eprintln!("warning: enum {}.{} not found in loaded winmd files", ns, name);
                     }
                 }
                 _ => {}
@@ -290,6 +315,8 @@ pub fn resolve_dependencies(
                     &index, namespace, name, &concrete_name, piid, args,
                 ) {
                     new_interfaces.push(iface);
+                } else {
+                    eprintln!("warning: parameterized interface {}.{} (as {}) not found in loaded winmd files", namespace, name, concrete_name);
                 }
             }
         }
@@ -448,30 +475,55 @@ fn collect_all_refs_from_interfaces(
 // --- Internal helpers ---
 
 /// Well-known PIIDs for generic interfaces whose GuidAttribute can't be read via extract_iid.
-fn well_known_piid(namespace: &str, name: &str) -> Option<&'static str> {
-    if namespace == "Windows.Foundation" {
-        match name {
-            "IReference`1" => Some("61c17706-2d65-11e0-9ae8-d48564015472"),
-            "TypedEventHandler`2" => Some("9de1c534-6ae1-11e0-84e1-18a905bcc53f"),
-            "EventHandler`1" => Some("9de1c533-6ae1-11e0-84e1-18a905bcc53f"),
-            _ => None,
+/// Expand winmd paths by discovering sibling .winmd files in the same directories.
+/// Returns a new `;`-separated path string with siblings appended.
+pub fn expand_winmd_paths(winmd_paths: &str) -> String {
+    let explicit: Vec<&str> = winmd_paths.split(';').filter(|s| !s.is_empty()).collect();
+
+    let mut all_paths: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    // Add explicit paths first
+    for p in &explicit {
+        let canonical = Path::new(p)
+            .canonicalize()
+            .map(|c| c.to_string_lossy().to_string())
+            .unwrap_or_else(|_| p.to_string());
+        if seen.insert(canonical.clone()) {
+            all_paths.push(p.to_string());
         }
-    } else if namespace == "Windows.Foundation.Collections" {
-        match name {
-            "IIterable`1" => Some("faa585ea-6214-4217-afda-7f46de5869b3"),
-            "IIterator`1" => Some("6a79e863-4300-459a-9966-cbb660963ee1"),
-            "IVectorView`1" => Some("bbe1fa4c-b0e3-4583-baef-1f1b2e483e56"),
-            "IVector`1" => Some("913337e9-11a1-4345-a3a2-4e7f956e222d"),
-            "IMapView`2" => Some("e480ce40-a338-4ada-adcf-272272e48cb9"),
-            "IMap`2" => Some("3c2925fe-8519-45c1-aa79-197b6718c1c1"),
-            "IKeyValuePair`2" => Some("02b51929-c1c4-4a7e-8940-0312b5c18500"),
-            "IObservableVector`1" => Some("5917eb53-50b4-4a0d-b309-65862b3f1dbc"),
-            "IObservableMap`2" => Some("65df2bf5-bf39-41b5-aebc-5a9d865e472b"),
-            _ => None,
-        }
-    } else {
-        None
     }
+
+    // Scan sibling .winmd files in the same directories
+    let mut scanned_dirs: HashSet<String> = HashSet::new();
+    for p in &explicit {
+        if let Some(parent) = Path::new(p).parent() {
+            let dir_key = parent
+                .canonicalize()
+                .map(|c| c.to_string_lossy().to_string())
+                .unwrap_or_else(|_| parent.to_string_lossy().to_string());
+            if !scanned_dirs.insert(dir_key) {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("winmd")) {
+                        let canonical = path
+                            .canonicalize()
+                            .map(|c| c.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                        if seen.insert(canonical) {
+                            eprintln!("Auto-discovered sibling winmd: {}", path.display());
+                            all_paths.push(path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    all_paths.join(";")
 }
 
 fn load_index(winmd_paths: &str) -> Option<reader::Index> {
@@ -479,7 +531,6 @@ fn load_index(winmd_paths: &str) -> Option<reader::Index> {
     if paths.len() == 1 {
         reader::Index::read(paths[0])
     } else {
-        // Load multiple winmd files
         let mut files = Vec::new();
         for path in &paths {
             if let Some(f) = reader::File::read(path) {
@@ -887,14 +938,15 @@ fn resolve_named_type(
 
     // Parameterized interface (generics non-empty)
     if !generics.is_empty() {
-        // Try GuidAttribute first, fall back to well-known PIIDs
-        let mut piid = match index.get(namespace, name).next() {
+        // Strip arity suffix (e.g. IVectorView`1 -> IVectorView) for winmd lookup
+        let lookup_name = name.split('`').next().unwrap_or(name);
+        let piid = match index.get(namespace, lookup_name).next() {
             Some(d) => extract_iid(&d),
-            None => String::new(),
+            None => {
+                eprintln!("warning: parameterized type {}.{} not found in loaded winmd files (cannot resolve PIID)", namespace, name);
+                String::new()
+            }
         };
-        if piid.is_empty() {
-            piid = well_known_piid(namespace, name).unwrap_or_default().to_string();
-        }
         let args = generics.iter().map(|g| map_winmd_type(g, index)).collect();
         return TypeMeta::Parameterized {
             namespace: namespace.to_string(),
@@ -907,6 +959,7 @@ fn resolve_named_type(
     let def = match index.get(namespace, name).next() {
         Some(d) => d,
         None => {
+            eprintln!("warning: type {}.{} not found in loaded winmd files (using empty IID)", namespace, name);
             return TypeMeta::Interface {
                 namespace: namespace.to_string(),
                 name: name.to_string(),
@@ -1015,6 +1068,42 @@ mod iface_tests {
         println!("IID: {}", super::extract_iid(&def));
         for (i, m) in def.methods().enumerate() {
             println!("  [{}] {}", i, m.name());
+        }
+    }
+
+    #[test]
+    fn debug_ivectorview_lookup() {
+        let index = reader::Index::read(WINDOWS_WINMD).unwrap();
+        // winmd stores parameterized types without arity suffix
+        let without_arity = index.get("Windows.Foundation.Collections", "IVectorView").next();
+        assert!(without_arity.is_some(), "IVectorView should be found in Windows.winmd");
+        // with arity suffix is NOT found
+        let with_arity = index.get("Windows.Foundation.Collections", "IVectorView`1").next();
+        assert!(with_arity.is_none(), "IVectorView`1 should NOT be found (winmd uses name without arity)");
+    }
+
+    #[test]
+    fn all_well_known_piids_found_in_winmd() {
+        let index = reader::Index::read(WINDOWS_WINMD).unwrap();
+        let cases = [
+            ("Windows.Foundation", "IReference"),
+            ("Windows.Foundation", "TypedEventHandler"),
+            ("Windows.Foundation", "EventHandler"),
+            ("Windows.Foundation.Collections", "IIterable"),
+            ("Windows.Foundation.Collections", "IIterator"),
+            ("Windows.Foundation.Collections", "IVectorView"),
+            ("Windows.Foundation.Collections", "IVector"),
+            ("Windows.Foundation.Collections", "IMapView"),
+            ("Windows.Foundation.Collections", "IMap"),
+            ("Windows.Foundation.Collections", "IKeyValuePair"),
+            ("Windows.Foundation.Collections", "IObservableVector"),
+            ("Windows.Foundation.Collections", "IObservableMap"),
+        ];
+        for (ns, name) in &cases {
+            let def = index.get(ns, name).next();
+            assert!(def.is_some(), "{}.{} should be found in Windows.winmd", ns, name);
+            let iid = super::extract_iid(&def.unwrap());
+            assert!(!iid.is_empty(), "{}.{} should have a GuidAttribute (PIID)", ns, name);
         }
     }
 }
