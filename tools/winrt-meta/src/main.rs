@@ -5,6 +5,7 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 
 use winrt_meta::codegen::typescript;
+use winrt_meta::codegen::javascript;
 use winrt_meta::meta;
 use winrt_meta::types::TypeMeta;
 
@@ -61,10 +62,10 @@ enum Commands {
         class_name: Option<String>,
 
         /// Target language
-        #[arg(long, default_value = "ts", value_parser = ["ts"])]
+        #[arg(long, default_value = "ts", value_parser = ["ts", "js"])]
         lang: String,
 
-        /// Output directory for generated .ts files
+        /// Output directory for generated .ts or .js files
         #[arg(long, default_value = "./generated", value_name = "DIR")]
         output: String,
     },
@@ -82,11 +83,6 @@ fn main() {
             lang,
             output,
         } => {
-            if lang != "ts" {
-                eprintln!("Only TypeScript (ts) generation is supported currently.");
-                std::process::exit(1);
-            }
-
             // Collect winmd paths from --folder and/or --winmd
             let mut winmd_parts: Vec<String> = Vec::new();
 
@@ -135,6 +131,8 @@ fn main() {
             let output_dir = Path::new(&output);
             fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
+            let ext = if lang == "js" { "js" } else { "ts" };
+
             if let Some(ref cls) = class_name {
                 // Single class mode
                 let ns = namespace
@@ -147,7 +145,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                generate_for_types(&winmd, output_dir, classes, Vec::new(), Vec::new());
+                generate_for_types(&winmd, output_dir, classes, Vec::new(), Vec::new(), &lang);
             } else {
                 // Determine which namespaces to generate
                 let namespaces = match namespace {
@@ -182,14 +180,14 @@ fn main() {
                     let enums = meta::parse_enums(&winmd, ns);
 
                     let (nc, ni, ne) = generate_for_types(
-                        &winmd, output_dir, classes, interfaces, enums,
+                        &winmd, output_dir, classes, interfaces, enums, &lang,
                     );
                     total_classes += nc;
                     total_interfaces += ni;
                     total_enums += ne;
                 }
 
-                // Generate index.ts combining everything
+                // Generate index file combining everything
                 if namespaces.len() >= 1 && (total_classes + total_interfaces + total_enums) > 1 {
                     // Re-collect all types for index generation
                     let mut all_classes = Vec::new();
@@ -205,9 +203,13 @@ fn main() {
                     all_interfaces.extend(deps.interfaces);
                     all_enums.extend(deps.enums);
 
-                    let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
-                    let index_path = output_dir.join("index.ts");
-                    fs::write(&index_path, &index_code).expect("Failed to write index.ts");
+                    let index_code = if lang == "js" {
+                        javascript::generate_index(&all_classes, &all_interfaces, &all_enums)
+                    } else {
+                        typescript::generate_index(&all_classes, &all_interfaces, &all_enums)
+                    };
+                    let index_path = output_dir.join(format!("index.{}", ext));
+                    fs::write(&index_path, &index_code).expect("Failed to write index file");
                     println!("Generated {}", index_path.display());
                 }
 
@@ -220,7 +222,7 @@ fn main() {
     }
 }
 
-/// Generate TypeScript files for a set of types (classes, interfaces, enums)
+/// Generate files for a set of types (classes, interfaces, enums)
 /// plus their transitive dependencies. Returns (class_count, interface_count, enum_count).
 fn generate_for_types(
     winmd: &str,
@@ -228,6 +230,7 @@ fn generate_for_types(
     classes: Vec<meta::ClassMeta>,
     interfaces: Vec<meta::InterfaceMeta>,
     enums: Vec<TypeMeta>,
+    lang: &str,
 ) -> (usize, usize, usize) {
     let deps = meta::resolve_dependencies(winmd, &classes, &interfaces, &enums);
     let mut all_classes = classes;
@@ -251,30 +254,45 @@ fn generate_for_types(
         .map(|i| i.name.clone())
         .collect();
 
+    let ext = if lang == "js" { "js" } else { "ts" };
+
     for iface in &all_interfaces {
-        let ts_code = typescript::generate_interface(iface, &known_types, &delegate_type_names);
-        let filename = format!("{}.ts", iface.name);
+        let code = if lang == "js" {
+            javascript::generate_interface(iface, &known_types, &delegate_type_names)
+        } else {
+            typescript::generate_interface(iface, &known_types, &delegate_type_names)
+        };
+        let filename = format!("{}.{}", iface.name, ext);
         let filepath = output_dir.join(&filename);
-        fs::write(&filepath, &ts_code).expect("Failed to write generated file");
+        fs::write(&filepath, &code).expect("Failed to write generated file");
         println!("Generated {}", filepath.display());
     }
 
     for en in &all_enums {
         if let TypeMeta::Enum { name, .. } = en {
-            if let Some(ts_code) = typescript::generate_enum(en) {
-                let filename = format!("{}.ts", name);
+            let code_opt = if lang == "js" {
+                javascript::generate_enum(en)
+            } else {
+                typescript::generate_enum(en)
+            };
+            if let Some(code) = code_opt {
+                let filename = format!("{}.{}", name, ext);
                 let filepath = output_dir.join(&filename);
-                fs::write(&filepath, &ts_code).expect("Failed to write generated file");
+                fs::write(&filepath, &code).expect("Failed to write generated file");
                 println!("Generated {}", filepath.display());
             }
         }
     }
 
     for class in &all_classes {
-        let ts_code = typescript::generate_class(class, &known_types, &delegate_type_names);
-        let filename = format!("{}.ts", class.name);
+        let code = if lang == "js" {
+            javascript::generate_class(class, &known_types, &delegate_type_names)
+        } else {
+            typescript::generate_class(class, &known_types, &delegate_type_names)
+        };
+        let filename = format!("{}.{}", class.name, ext);
         let filepath = output_dir.join(&filename);
-        fs::write(&filepath, &ts_code).expect("Failed to write generated file");
+        fs::write(&filepath, &code).expect("Failed to write generated file");
         println!("Generated {}", filepath.display());
     }
 
