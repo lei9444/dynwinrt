@@ -4,7 +4,6 @@
   "description": "Dynamic WinRT bindings for Node.js — call any Windows Runtime API without native code generation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "browser": "browser.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/lei9444/dynwinrt"
@@ -21,7 +20,7 @@
   ],
   "files": [
     "dist",
-    "browser.js"
+    "LICENSE"
   ],
   "napi": {
     "binaryName": "dynwinrt-js",
@@ -35,7 +34,7 @@
     "node": ">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
+    "registry": "https://registry.npmjs.org",
     "access": "public"
   },
   "scripts": {

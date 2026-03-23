@@ -22,10 +22,11 @@
     "winrt-meta": "./bin/winrt-meta.js"
   },
   "files": [
-    "bin/"
+    "bin/",
+    "LICENSE"
   ],
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
+    "registry": "https://registry.npmjs.org",
     "access": "public"
   }
 }
