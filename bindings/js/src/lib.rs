@@ -1114,6 +1114,11 @@ impl RustStaticBench {
   }
 
   #[napi]
+  pub fn uri_query_parsed_from_obj(obj: &StaticUri) -> napi::Result<StaticObj> {
+    Ok(StaticObj(obj.0.QueryParsed().map_err(map_win_err)?.into()))
+  }
+
+  #[napi]
   pub fn uri_combine(obj: &StaticUri, relative: String) -> napi::Result<StaticUri> {
     let result = obj.0.CombineUri(&HSTRING::from(relative)).map_err(map_win_err)?;
     Ok(StaticUri(result))

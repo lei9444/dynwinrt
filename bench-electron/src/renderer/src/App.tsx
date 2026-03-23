@@ -38,6 +38,9 @@ const BENCHMARKS: BenchDef[] = [
   { name: 'get_Host → hstring', group: 'Getter (0 in → 1 out)', staticChannel: 'static-get-host', dynamicChannel: 'dynamic-get-host' },
   { name: 'get_Port → i32', group: 'Getter (0 in → 1 out)', staticChannel: 'static-get-port', dynamicChannel: 'dynamic-get-port' },
   { name: 'get_Suspicious → bool', group: 'Getter (0 in → 1 out)', staticChannel: 'static-get-suspicious', dynamicChannel: 'dynamic-get-suspicious' },
+  // NOTE: get_QueryParsed disabled — WwwFormUrlDecoder COM Release in napi External
+  // finalizer segfaults during V8 GC in Electron's async IPC loop. Works fine in non-IPC bench.
+  // { name: 'get_QueryParsed → object', group: 'Getter (0 in → 1 out)', staticChannel: 'static-get-query-parsed', dynamicChannel: 'dynamic-get-query-parsed' },
   // Factory (1 in → 1 out)
   { name: 'CreateUri (hstring)', group: 'Factory (1 in → 1 out)', staticChannel: 'static-create-uri', dynamicChannel: 'dynamic-create-uri' },
   { name: 'PV.CreateInt32 (i32)', group: 'Factory (1 in → 1 out)', staticChannel: 'static-pv-i32', dynamicChannel: 'dynamic-pv-i32' },

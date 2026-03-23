@@ -145,6 +145,12 @@ unsafe extern "C" fn uri_suspicious_from_obj(env: napi_env, info: napi_callback_
     from_bool(env, uri.Suspicious().unwrap())
 }
 
+unsafe extern "C" fn uri_query_parsed_from_obj(env: napi_env, info: napi_callback_info) -> napi_value {
+    let uri: Uri = unwrap_obj(env, get_arg(env, info, 0));
+    let parsed = uri.QueryParsed().unwrap();
+    wrap_obj(env, parsed)
+}
+
 unsafe extern "C" fn uri_combine(env: napi_env, info: napi_callback_info) -> napi_value {
     let args = get_args(env, info, 2);
     let uri: Uri = unwrap_obj(env, args[0]);
@@ -331,6 +337,7 @@ unsafe extern "C" fn napi_register_module_v1(env: napi_env, exports: napi_value)
     register_fn(env, exports, "uriHostFromObj", Some(uri_host_from_obj));
     register_fn(env, exports, "uriPortFromObj", Some(uri_port_from_obj));
     register_fn(env, exports, "uriSuspiciousFromObj", Some(uri_suspicious_from_obj));
+    register_fn(env, exports, "uriQueryParsedFromObj", Some(uri_query_parsed_from_obj));
     register_fn(env, exports, "uriCombine", Some(uri_combine));
     register_fn(env, exports, "uriCreateWithRelative", Some(uri_create_with_relative));
     register_fn(env, exports, "pvCreateI32", Some(pv_create_i32));

@@ -5,6 +5,7 @@
 #include <napi.h>
 #include <unknwn.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Devices.Geolocation.h>
 
 namespace wf  = winrt::Windows::Foundation;
@@ -85,6 +86,11 @@ Napi::Value UriSuspiciousFromObj(const Napi::CallbackInfo& info) {
         unwrap_obj<wf::Uri>(info[0]).Suspicious());
 }
 
+// uriQueryParsedFromObj(uri: External) -> External (object)
+Napi::Value UriQueryParsedFromObj(const Napi::CallbackInfo& info) {
+    return wrap_obj(info.Env(), unwrap_obj<wf::Uri>(info[0]).QueryParsed());
+}
+
 // uriCombine(uri: External, relative: string) -> External
 Napi::Value UriCombine(const Napi::CallbackInfo& info) {
     auto result = unwrap_obj<wf::Uri>(info[0]).CombineUri(to_hs(info[1]));
@@ -144,6 +150,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("uriHostFromObj",       Napi::Function::New(env, UriHostFromObj));
     exports.Set("uriPortFromObj",       Napi::Function::New(env, UriPortFromObj));
     exports.Set("uriSuspiciousFromObj", Napi::Function::New(env, UriSuspiciousFromObj));
+    exports.Set("uriQueryParsedFromObj", Napi::Function::New(env, UriQueryParsedFromObj));
     exports.Set("uriCombine",          Napi::Function::New(env, UriCombine));
     exports.Set("uriCreateWithRelative", Napi::Function::New(env, UriCreateWithRelative));
     exports.Set("pvCreateI32",          Napi::Function::New(env, PvCreateI32));

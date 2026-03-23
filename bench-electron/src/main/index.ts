@@ -16,13 +16,14 @@ import {
 // Static C++/WinRT benchmark addon
 const require = createRequire(import.meta.url)
 const CppBench = require(
-  join(__dirname, '../../../bindings/js/static-bench/build/Release/static_bench.node')
+  join(__dirname, '../../../bindings/js/static-bench-cpp/build/Release/static_bench.node')
 ) as {
   uriCreate: (url: string) => unknown
   uriGetHost: (url: string) => string
   uriHostFromObj: (uri: unknown) => string
   uriPortFromObj: (uri: unknown) => number
   uriSuspiciousFromObj: (uri: unknown) => boolean
+  uriQueryParsedFromObj: (uri: unknown) => unknown
   uriCombine: (uri: unknown, relative: string) => unknown
   pvCreateI32: (v: number) => unknown
   pvCreateF64: (v: number) => unknown
@@ -154,6 +155,7 @@ const mCreateUri = iUriFactory.methodByName('CreateUri')
 const mGetHost = iUri.methodByName('get_Host')
 const mGetPort = iUri.methodByName('get_Port')
 const mGetSuspicious = iUri.methodByName('get_Suspicious')
+const mGetQueryParsed = iUri.methodByName('get_QueryParsed')
 const mCombineUri = iUri.methodByName('CombineUri')
 const mPvCreateI32 = iPvStatics.methodByName('CreateInt32')
 const mPvCreateF64 = iPvStatics.methodByName('CreateDouble')
@@ -169,6 +171,7 @@ const dynUri = mCreateUri.invoke(uriFactory, [DynWinRtValue.hstring(testUrl)]).c
 const staticUri = CppBench.uriCreate(testUrl)
 
 console.log('[main] WinRT interfaces registered, factories created')
+
 
 // ======================================================================
 // IPC handlers — one WinRT call per IPC round-trip
@@ -186,6 +189,9 @@ ipcMain.handle('dynamic-get-port', () => mGetPort.invoke(dynUri, []).toNumber())
 
 ipcMain.handle('static-get-suspicious', () => CppBench.uriSuspiciousFromObj(staticUri))
 ipcMain.handle('dynamic-get-suspicious', () => mGetSuspicious.invoke(dynUri, []).toBool())
+
+ipcMain.handle('static-get-query-parsed', () => { CppBench.uriQueryParsedFromObj(staticUri) })
+ipcMain.handle('dynamic-get-query-parsed', () => { mGetQueryParsed.invoke(dynUri, []) })
 
 // Factory (1 in → 1 out)
 ipcMain.handle('static-create-uri', () => { CppBench.uriCreate('https://example.com') })

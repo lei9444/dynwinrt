@@ -70,6 +70,8 @@ const testUrl = "https://example.com:8080/path?q=1"
 const mCreateUri = iUriFactory.methodByName("CreateUri")
 const mGetHost   = iUri.methodByName("get_Host")
 const mGetPort   = iUri.methodByName("get_Port")
+const mGetSusp   = iUri.methodByName("get_Suspicious")
+const mGetQP     = iUri.methodByName("get_QueryParsed")
 const mPvI32     = iPvStatics.methodByName("CreateInt32")
 const mPvF64     = iPvStatics.methodByName("CreateDouble")
 const mPvBool    = iPvStatics.methodByName("CreateBoolean")
@@ -138,7 +140,14 @@ row('get_Suspicious → bool',
   () => CppBench.uriSuspiciousFromObj(cppUri),
   () => RustRawBench.uriSuspiciousFromObj(rustRawUri),
   () => RustStaticBench.uriSuspiciousFromObj(rustUri),
-  () => { },
+  () => mGetSusp.invoke(dynUri, []).toBool(),
+)
+
+row('get_QueryParsed → object',
+  () => CppBench.uriQueryParsedFromObj(cppUri),
+  () => RustRawBench.uriQueryParsedFromObj(rustRawUri),
+  () => RustStaticBench.uriQueryParsedFromObj(rustUri),
+  () => mGetQP.invoke(dynUri, []),
 )
 
 row('CreateUri (hstring)',

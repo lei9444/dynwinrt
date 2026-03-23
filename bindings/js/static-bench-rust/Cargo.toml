@@ -15,6 +15,7 @@ dynwinrt = { path = "../../../crates/dynwinrt" }
 version = ">=0.59, <=0.62"
 features = [
     "Foundation",
+    "Foundation_Collections",
     "Devices_Geolocation",
 ]
 
