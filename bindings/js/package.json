@@ -1,5 +1,5 @@
 {
-  "name": "@lei9444/dynwinrt-js",
+  "name": "dynwinrt-js",
   "version": "0.1.0",
   "description": "Dynamic WinRT bindings for Node.js — call any Windows Runtime API without native code generation",
   "main": "dist/index.js",

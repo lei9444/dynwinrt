@@ -1,5 +1,5 @@
 {
-  "name": "@lei9444/winrt-meta",
+  "name": "winrt-meta",
   "version": "0.1.0",
   "description": "Generate TypeScript bindings from WinRT metadata (.winmd) files for use with dynwinrt-js",
   "license": "MIT",
