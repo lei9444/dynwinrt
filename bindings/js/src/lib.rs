@@ -494,6 +494,47 @@ impl DynWinRTValue {
     DynWinRTValue(dynwinrt::WinRTValue::Null)
   }
 
+  /// Create an IVector<T> from items. The element_type is used for IID computation.
+  /// Items are passed as DynWinRTValue objects (must be Object or Struct-wrapped values).
+  #[napi]
+  pub fn create_vector(items: Vec<&DynWinRTValue>, element_type: &DynWinRTType) -> napi::Result<DynWinRTValue> {
+    let iids = TABLE.vector_iids(&element_type.0);
+    let iunknown_items: Vec<IUnknown> = items.iter()
+      .map(|item| {
+        item.0.as_object()
+          .ok_or_else(|| napi::Error::from_reason("createVector: all items must be Object values"))
+      })
+      .collect::<napi::Result<Vec<_>>>()?;
+    let vector = dynwinrt::vector::create_vector(iunknown_items, iids);
+    Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
+  }
+
+  /// Create an IMap<K,V> from parallel key/value arrays.
+  /// Keys and values must be Object values (e.g. PropertyValue-boxed strings/ints).
+  #[napi]
+  pub fn create_map(
+    keys: Vec<&DynWinRTValue>,
+    values: Vec<&DynWinRTValue>,
+    key_type: &DynWinRTType,
+    value_type: &DynWinRTType,
+  ) -> napi::Result<DynWinRTValue> {
+    if keys.len() != values.len() {
+      return Err(napi::Error::from_reason("createMap: keys and values must have the same length"));
+    }
+    let iids = TABLE.map_iids(&key_type.0, &value_type.0);
+    let entries: Vec<(IUnknown, IUnknown)> = keys.iter().zip(values.iter())
+      .map(|(k, v)| {
+        let key = k.0.as_object()
+          .ok_or_else(|| napi::Error::from_reason("createMap: all keys must be Object values"))?;
+        let val = v.0.as_object()
+          .ok_or_else(|| napi::Error::from_reason("createMap: all values must be Object values"))?;
+        Ok((key, val))
+      })
+      .collect::<napi::Result<Vec<_>>>()?;
+    let map = dynwinrt::map::create_map(entries, iids);
+    Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(map)))
+  }
+
   #[napi]
   pub async fn to_promise(&self) -> napi::Result<DynWinRTValue> {
     let v = (&self.0).await

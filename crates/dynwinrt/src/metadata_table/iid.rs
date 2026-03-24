@@ -8,7 +8,7 @@ use super::type_kind::*;
 // ===========================================================================
 
 impl MetadataTable {
-    fn compute_parameterized_iid(&self, piid: &GUID, type_args: &[TypeKind]) -> GUID {
+    pub(crate) fn compute_parameterized_iid(&self, piid: &GUID, type_args: &[TypeKind]) -> GUID {
         let arg_sigs: Vec<String> = type_args.iter()
             .map(|a| self.signature_string_kind(*a))
             .collect();

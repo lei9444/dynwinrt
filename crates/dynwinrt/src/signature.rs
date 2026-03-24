@@ -349,9 +349,17 @@ impl Method {
             }
             CallStrategy::DirectFillArray => {
                 // fn(this, u32, *mut u8, *mut u32) -> HRESULT
+                // FillArray: caller provides buffer of known capacity, callee fills it.
                 let param = &self.info.parameters[0];
-                let array_data = args[param.value_index].as_array().unwrap();
                 let elem_type = param.typ.array_element_type();
+                let fptr = call::get_vtable_function_ptr(obj, self.info.index);
+
+                assert!(
+                    !args.is_empty() && args[param.value_index].as_array().is_some(),
+                    "DirectFillArray requires a pre-allocated array argument with the desired capacity. \
+                     Pass an ArrayData with the expected number of elements."
+                );
+                let array_data = args[param.value_index].as_array().unwrap();
                 let capacity = array_data.len() as u32;
                 let total_bytes = capacity as usize * elem_type.element_size();
                 let buffer_ptr = unsafe {
@@ -360,7 +368,6 @@ impl Method {
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
                 let mut actual_count: u32 = 0;
-                let fptr = call::get_vtable_function_ptr(obj, self.info.index);
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void, u32, *mut u8, *mut u32,
@@ -370,6 +377,10 @@ impl Method {
                 if hr.is_err() {
                     unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(buffer_ptr as _)) };
                     hr.ok()?;
+                }
+                // FillArray: if callee didn't set actual_count, assume it filled the entire buffer
+                if actual_count == 0 && capacity > 0 {
+                    actual_count = capacity;
                 }
                 let array = crate::array::ArrayData::from_cotaskmem(
                     elem_type, buffer_ptr as _, actual_count as usize,
@@ -398,6 +409,10 @@ impl Method {
                 if hr.is_err() {
                     unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(buffer_ptr as _)) };
                     hr.ok()?;
+                }
+                // FillArray: if callee didn't set actual_count, assume it filled the entire buffer
+                if actual_count == 0 && capacity > 0 {
+                    actual_count = capacity;
                 }
                 let array = crate::array::ArrayData::from_cotaskmem(
                     elem_type, buffer_ptr as _, actual_count as usize,

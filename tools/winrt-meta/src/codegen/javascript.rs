@@ -250,6 +250,36 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
         out.push_str("    }\n");
     }
 
+    // static create() for IVector<T> and IMap<K,V>
+    if let Some(ref piid) = iface.generic_piid {
+        if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
+            // IVector<T> — generate static create(items) factory
+            let elem_type = ts_dynwinrt_type(&iface.generic_args[0]);
+            out.push('\n');
+            out.push_str("    /**\n");
+            out.push_str("     * Create a new IVector from an array of items.\n");
+            out.push_str("     * Each item must be a DynWinRtValue object.\n");
+            out.push_str("     */\n");
+            out.push_str(&format!(
+                "    static create(items) {{\n        return new {}(DynWinRtValue.createVector(items.map(i => i._obj || i), {}));\n    }}\n",
+                iface.name, elem_type
+            ));
+        } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
+            // IMap<K,V> — generate static create(keys, values) factory
+            let key_type = ts_dynwinrt_type(&iface.generic_args[0]);
+            let val_type = ts_dynwinrt_type(&iface.generic_args[1]);
+            out.push('\n');
+            out.push_str("    /**\n");
+            out.push_str("     * Create a new IMap from parallel arrays of keys and values.\n");
+            out.push_str("     * Each key/value must be a DynWinRtValue object.\n");
+            out.push_str("     */\n");
+            out.push_str(&format!(
+                "    static create(keys, values) {{\n        return new {}(DynWinRtValue.createMap(keys.map(k => k._obj || k), values.map(v => v._obj || v), {}, {}));\n    }}\n",
+                iface.name, key_type, val_type
+            ));
+        }
+    }
+
     // Instance methods
     let iface_var = format!("_{}", iface.name);
     for method in &iface.methods {

@@ -12,8 +12,10 @@ mod winapp;
 mod array;
 mod dasync;
 pub mod delegate;
+pub mod map;
 mod meta;
 pub mod metadata_table;
+pub mod vector;
 
 pub use crate::result::Result;
 pub use crate::roapi::ro_get_activation_factory_2;

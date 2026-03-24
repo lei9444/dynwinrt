@@ -431,7 +431,8 @@ fn type_meta_short_name(typ: &TypeMeta) -> String {
         TypeMeta::Object => "Object".to_string(),
         TypeMeta::RuntimeClass { name, .. }
         | TypeMeta::Interface { name, .. }
-        | TypeMeta::Enum { name, .. } => name.clone(),
+        | TypeMeta::Enum { name, .. }
+        | TypeMeta::Struct { name, .. } => name.clone(),
         TypeMeta::Parameterized { name, args, .. } => make_parameterized_name(name, args),
         _ => "Unknown".to_string(),
     }
@@ -694,10 +695,9 @@ fn parse_interface_methods(
                 let is_out = param_def.flags().contains(windows_metadata::ParamAttributes::Out);
                 let direction = if is_out {
                     if matches!(sig.types[j], windows_metadata::Type::Array(_)) {
-                        // [out] Array = FillArray (caller allocates buffer)
+                        // [out] Array = FillArray (caller allocates buffer, callee fills)
                         ParamDirection::OutFill
                     } else {
-                        // [out] ArrayRef or scalar = ReceiveArray / regular out
                         ParamDirection::Out
                     }
                 } else {

@@ -241,7 +241,7 @@ impl WinRTValue {
             WinRTValue::Guid(g) => arg(g),
             WinRTValue::RawPtr(p) => arg(p),
             WinRTValue::OutValue(p, _) => arg(p),
-            WinRTValue::Null => panic!("Cannot pass Null as libffi arg"),
+            WinRTValue::Null => arg(&std::ptr::null::<std::ffi::c_void>()),
             WinRTValue::Async(_) => panic!("Cannot pass async value as libffi arg"),
             WinRTValue::ArrayOfIUnknown(data) => arg(&data.0),
             WinRTValue::Struct(data) => unsafe { arg(&*data.as_ptr()) },

@@ -236,6 +236,47 @@ impl MetadataTable {
             .find(|(n, _)| n == member_name)
             .map(|(_, v)| *v)
     }
+
+    // -----------------------------------------------------------------------
+    // Collection IID computation helpers
+    // -----------------------------------------------------------------------
+
+    /// Compute all IIDs needed for an IVector<element_type>.
+    pub fn vector_iids(self: &Arc<Self>, element_type: &TypeHandle) -> crate::vector::VectorIids {
+        use type_kind::*;
+        let elem = element_type.kind;
+        crate::vector::VectorIids {
+            iterable: self.compute_parameterized_iid(&IITERABLE, &[elem]),
+            vector: self.compute_parameterized_iid(&IVECTOR, &[elem]),
+            vector_view: self.compute_parameterized_iid(&IVECTOR_VIEW, &[elem]),
+            iterator: self.compute_parameterized_iid(&IITERATOR, &[elem]),
+        }
+    }
+
+    /// Compute all IIDs needed for an IMap<key_type, value_type>.
+    pub fn map_iids(self: &Arc<Self>, key_type: &TypeHandle, value_type: &TypeHandle) -> crate::map::MapIids {
+        use type_kind::*;
+        let k = key_type.kind;
+        let v = value_type.kind;
+        // Create a Parameterized TypeKind for IKeyValuePair<K,V> so that
+        // signature_string_kind can resolve it for the outer IIterable/IIterator.
+        let kvp_kind = self.push_parameterized(
+            TypeKind::Generic { piid: IKEY_VALUE_PAIR, arity: 2 },
+            vec![k, v],
+        );
+        let kvp_iid = self.compute_parameterized_iid(&IKEY_VALUE_PAIR, &[k, v]);
+        // IIterable<IKeyValuePair<K,V>> and IIterator<IKeyValuePair<K,V>>
+        // need the signature of the KVP as a type arg — which is itself a parameterized type.
+        let iterable_iid = self.compute_parameterized_iid(&IITERABLE, &[kvp_kind]);
+        let iterator_iid = self.compute_parameterized_iid(&IITERATOR, &[kvp_kind]);
+        crate::map::MapIids {
+            iterable: iterable_iid,
+            map: self.compute_parameterized_iid(&IMAP, &[k, v]),
+            map_view: self.compute_parameterized_iid(&IMAP_VIEW, &[k, v]),
+            kvp: kvp_iid,
+            iterator: iterator_iid,
+        }
+    }
 }
 
 // ===========================================================================

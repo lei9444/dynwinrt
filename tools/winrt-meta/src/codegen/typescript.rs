@@ -175,6 +175,34 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
         out.push_str("    }\n");
     }
 
+    // static create() for IVector<T> and IMap<K,V>
+    if let Some(ref piid) = iface.generic_piid {
+        if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
+            // IVector<T>
+            let elem_type = ts_dynwinrt_type(&iface.generic_args[0]);
+            out.push('\n');
+            out.push_str(&format!(
+                "    /** Create a new IVector from an array of items. */\n\
+                 \x20   static create(items: DynWinRtValue[]): {} {{\n\
+                 \x20       return new {}(DynWinRtValue.createVector(items.map(i => (i as any)._obj || i), {}));\n\
+                 \x20   }}\n",
+                iface.name, iface.name, elem_type
+            ));
+        } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
+            // IMap<K,V>
+            let key_type = ts_dynwinrt_type(&iface.generic_args[0]);
+            let val_type = ts_dynwinrt_type(&iface.generic_args[1]);
+            out.push('\n');
+            out.push_str(&format!(
+                "    /** Create a new IMap from parallel arrays of keys and values. */\n\
+                 \x20   static create(keys: DynWinRtValue[], values: DynWinRtValue[]): {} {{\n\
+                 \x20       return new {}(DynWinRtValue.createMap(keys.map(k => (k as any)._obj || k), values.map(v => (v as any)._obj || v), {}, {}));\n\
+                 \x20   }}\n",
+                iface.name, iface.name, key_type, val_type
+            ));
+        }
+    }
+
     // Instance methods
     let iface_var = format!("_{}", iface.name);
     for method in &iface.methods {
@@ -1416,7 +1444,8 @@ pub(crate) fn collect_iface_type_imports(iface: &InterfaceMeta) -> HashSet<(Stri
 }
 
 pub(crate) fn get_in_params(method: &MethodMeta) -> Vec<&crate::meta::ParamMeta> {
-    method.params.iter().filter(|p| p.direction == ParamDirection::In).collect()
+    // Include OutFill params as "in" — FillArray requires caller to provide the buffer
+    method.params.iter().filter(|p| p.direction == ParamDirection::In || p.direction == ParamDirection::OutFill).collect()
 }
 
 fn ts_param_list(in_params: &[&crate::meta::ParamMeta], known_types: &HashSet<String>) -> String {
