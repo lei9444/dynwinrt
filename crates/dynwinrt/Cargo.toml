@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 libffi = "5.1.0"
+paste = "1"
 tokio = { version = "1.49.0", features = ["macros", "rt"] }
 windows-collections = "0.3.2"
 windows-core = "0.62.2"

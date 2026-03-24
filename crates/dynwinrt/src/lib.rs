@@ -10,6 +10,7 @@ mod value;
 mod winapp;
 
 mod array;
+mod com_helpers;
 mod dasync;
 pub mod delegate;
 pub mod map;

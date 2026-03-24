@@ -449,7 +449,15 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
 
     out.push('\n');
     out.push_str("    constructor(obj) {\n");
-    out.push_str("        this._obj = obj;\n");
+    if let Some(ref iface) = class.default_interface {
+        if !iface.iid.is_empty() {
+            out.push_str(&format!("        this._obj = obj.cast(IID_{});\n", iface.name));
+        } else {
+            out.push_str("        this._obj = obj;\n");
+        }
+    } else {
+        out.push_str("        this._obj = obj;\n");
+    }
     out.push_str("    }\n");
 
     // Default constructor — use IActivationFactory.ActivateInstance (vtable index 6)

@@ -764,7 +764,8 @@ fn type_meta_to_winmd_type(typ: &TypeMeta) -> windows_metadata::Type {
         TypeMeta::Object => windows_metadata::Type::Object,
         TypeMeta::RuntimeClass { namespace, name, .. }
         | TypeMeta::Interface { namespace, name, .. }
-        | TypeMeta::Enum { namespace, name, .. } => windows_metadata::Type::named(namespace, name),
+        | TypeMeta::Enum { namespace, name, .. }
+        | TypeMeta::Struct { namespace, name, .. } => windows_metadata::Type::named(namespace, name),
         _ => windows_metadata::Type::Object,
     }
 }

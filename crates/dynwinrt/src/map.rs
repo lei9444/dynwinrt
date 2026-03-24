@@ -8,6 +8,8 @@ use core::ffi::c_void;
 use std::cell::RefCell;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
+use crate::com_helpers::{IInspectableVtbl, E_BOUNDS, S_OK};
+use crate::com_helpers::{inspectable_stubs, dual_vtable_com, single_vtable_com};
 use crate::vector::SingleThreadedIterator;
 
 // ======================================================================
@@ -27,14 +29,6 @@ pub struct MapIids {
 // ======================================================================
 // COM vtable layouts
 // ======================================================================
-
-#[repr(C)]
-struct IInspectableVtbl {
-    base: windows_core::IUnknown_Vtbl,
-    get_iids: unsafe extern "system" fn(*mut c_void, *mut u32, *mut *mut GUID) -> HRESULT,
-    get_runtime_class_name: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
-    get_trust_level: unsafe extern "system" fn(*mut c_void, *mut i32) -> HRESULT,
-}
 
 /// IIterable<IKeyValuePair<K,V>> vtable
 #[repr(C)]
@@ -73,14 +67,6 @@ struct KeyValuePairVtbl {
     get_key: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
     get_value: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT,
 }
-
-// ======================================================================
-// Constants
-// ======================================================================
-
-const E_NOINTERFACE: HRESULT = HRESULT(0x80004002u32 as i32);
-const E_BOUNDS: HRESULT = HRESULT(0x8000000Bu32 as i32);
-const S_OK: HRESULT = HRESULT(0);
 
 // ======================================================================
 // Key comparison helper
@@ -179,9 +165,9 @@ impl SingleThreadedMap {
                 AddRef: Self::add_ref_iterable,
                 Release: Self::release_iterable,
             },
-            get_iids: Self::get_iids_stub,
-            get_runtime_class_name: Self::get_rcn_stub,
-            get_trust_level: Self::get_tl_stub,
+            get_iids: Self::get_iids_iterable,
+            get_runtime_class_name: Self::get_runtime_class_name_iterable,
+            get_trust_level: Self::get_trust_level_iterable,
         },
         first: Self::first,
     };
@@ -193,9 +179,9 @@ impl SingleThreadedMap {
                 AddRef: Self::add_ref_map,
                 Release: Self::release_map,
             },
-            get_iids: Self::get_iids_stub2,
-            get_runtime_class_name: Self::get_rcn_stub2,
-            get_trust_level: Self::get_tl_stub2,
+            get_iids: Self::get_iids_map,
+            get_runtime_class_name: Self::get_runtime_class_name_map,
+            get_trust_level: Self::get_trust_level_map,
         },
         lookup: Self::lookup,
         get_size: Self::get_size,
@@ -206,92 +192,18 @@ impl SingleThreadedMap {
         clear: Self::clear,
     };
 
-    unsafe fn from_iterable_ptr(this: *mut c_void) -> &'static Self {
-        &*(this as *const Self)
-    }
-
-    unsafe fn from_map_ptr(this: *mut c_void) -> &'static Self {
-        let base = (this as *const *const c_void).sub(1) as *const Self;
-        &*base
-    }
-
-    fn as_iterable_ptr(this: *const Self) -> *mut c_void {
-        this as *mut c_void
-    }
-
-    // -- IUnknown iterable --
-
-    unsafe extern "system" fn qi_iterable(this: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-        Self::qi_impl(Self::from_iterable_ptr(this), this, iid, ppv)
-    }
-    unsafe extern "system" fn add_ref_iterable(this: *mut c_void) -> u32 { Self::from_iterable_ptr(this).ref_count.add_ref() }
-    unsafe extern "system" fn release_iterable(this: *mut c_void) -> u32 {
-        let me = Self::from_iterable_ptr(this);
-        let r = me.ref_count.release();
-        if r == 0 { drop(Box::from_raw(this as *mut Self)); }
-        r
-    }
-
-    // -- IUnknown map --
-
-    unsafe extern "system" fn qi_map(this: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-        let me = Self::from_map_ptr(this);
-        Self::qi_impl(me, Self::as_iterable_ptr(me as *const Self), iid, ppv)
-    }
-    unsafe extern "system" fn add_ref_map(this: *mut c_void) -> u32 { Self::from_map_ptr(this).ref_count.add_ref() }
-    unsafe extern "system" fn release_map(this: *mut c_void) -> u32 {
-        let me = Self::from_map_ptr(this);
-        let r = me.ref_count.release();
-        if r == 0 { drop(Box::from_raw(Self::as_iterable_ptr(me as *const Self) as *mut Self)); }
-        r
-    }
-
-    // -- Shared QI --
-
-    unsafe fn qi_impl(me: &Self, identity: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-        if iid.is_null() || ppv.is_null() {
-            return HRESULT(-2147467261);
-        }
-        let iid = &*iid;
-        if *iid == IUnknown::IID
-            || *iid == windows_core::IInspectable::IID
-            || *iid == windows_core::imp::IAgileObject::IID
-            || *iid == me.iids.iterable
-        {
-            *ppv = identity;
-            me.ref_count.add_ref();
-            S_OK
-        } else if *iid == me.iids.map {
-            *ppv = (identity as *const *const c_void).add(1) as *mut c_void;
-            me.ref_count.add_ref();
-            S_OK
-        } else if *iid == windows_core::imp::IMarshal::IID {
-            me.ref_count.add_ref();
-            windows_core::imp::marshaler(core::mem::transmute(identity), ppv)
-        } else {
-            *ppv = std::ptr::null_mut();
-            E_NOINTERFACE
-        }
-    }
-
-    // -- IInspectable stubs --
-
-    unsafe extern "system" fn get_iids_stub(_: *mut c_void, c: *mut u32, i: *mut *mut GUID) -> HRESULT { *c = 0; *i = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_rcn_stub(_: *mut c_void, n: *mut *mut c_void) -> HRESULT { *n = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_tl_stub(_: *mut c_void, l: *mut i32) -> HRESULT { *l = 0; S_OK }
-    unsafe extern "system" fn get_iids_stub2(_: *mut c_void, c: *mut u32, i: *mut *mut GUID) -> HRESULT { *c = 0; *i = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_rcn_stub2(_: *mut c_void, n: *mut *mut c_void) -> HRESULT { *n = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_tl_stub2(_: *mut c_void, l: *mut i32) -> HRESULT { *l = 0; S_OK }
+    dual_vtable_com!(iterable, map, map);
+    inspectable_stubs!(iterable, map);
 
     // -- IIterable<IKeyValuePair<K,V>> --
 
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
         let entries = me.entries.borrow();
-        let kvp_items: Vec<IUnknown> = entries.iter()
-            .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp))
+        let kvp_items: Vec<usize> = entries.iter()
+            .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw() as usize)
             .collect();
-        let iter = SingleThreadedIterator::create(kvp_items, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(kvp_items, false, me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -389,9 +301,9 @@ impl SingleThreadedMapView {
                 AddRef: Self::add_ref_iterable,
                 Release: Self::release_iterable,
             },
-            get_iids: Self::get_iids_stub,
-            get_runtime_class_name: Self::get_rcn_stub,
-            get_trust_level: Self::get_tl_stub,
+            get_iids: Self::get_iids_iterable,
+            get_runtime_class_name: Self::get_runtime_class_name_iterable,
+            get_trust_level: Self::get_trust_level_iterable,
         },
         first: Self::first,
     };
@@ -403,9 +315,9 @@ impl SingleThreadedMapView {
                 AddRef: Self::add_ref_view,
                 Release: Self::release_view,
             },
-            get_iids: Self::get_iids_stub2,
-            get_runtime_class_name: Self::get_rcn_stub2,
-            get_trust_level: Self::get_tl_stub2,
+            get_iids: Self::get_iids_view,
+            get_runtime_class_name: Self::get_runtime_class_name_view,
+            get_trust_level: Self::get_trust_level_view,
         },
         lookup: Self::lookup,
         get_size: Self::get_size,
@@ -424,80 +336,17 @@ impl SingleThreadedMapView {
         unsafe { IUnknown::from_raw(Box::into_raw(view) as *mut c_void) }
     }
 
-    unsafe fn from_iterable_ptr(this: *mut c_void) -> &'static Self { &*(this as *const Self) }
-    unsafe fn from_view_ptr(this: *mut c_void) -> &'static Self {
-        let base = (this as *const *const c_void).sub(1) as *const Self;
-        &*base
-    }
-    fn as_iterable_ptr(this: *const Self) -> *mut c_void { this as *mut c_void }
-
-    // -- IUnknown --
-
-    unsafe extern "system" fn qi_iterable(this: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-        Self::qi_impl(Self::from_iterable_ptr(this), this, iid, ppv)
-    }
-    unsafe extern "system" fn add_ref_iterable(this: *mut c_void) -> u32 { Self::from_iterable_ptr(this).ref_count.add_ref() }
-    unsafe extern "system" fn release_iterable(this: *mut c_void) -> u32 {
-        let me = Self::from_iterable_ptr(this);
-        let r = me.ref_count.release();
-        if r == 0 { drop(Box::from_raw(this as *mut Self)); }
-        r
-    }
-
-    unsafe extern "system" fn qi_view(this: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-        let me = Self::from_view_ptr(this);
-        Self::qi_impl(me, Self::as_iterable_ptr(me as *const Self), iid, ppv)
-    }
-    unsafe extern "system" fn add_ref_view(this: *mut c_void) -> u32 { Self::from_view_ptr(this).ref_count.add_ref() }
-    unsafe extern "system" fn release_view(this: *mut c_void) -> u32 {
-        let me = Self::from_view_ptr(this);
-        let r = me.ref_count.release();
-        if r == 0 { drop(Box::from_raw(Self::as_iterable_ptr(me as *const Self) as *mut Self)); }
-        r
-    }
-
-    unsafe fn qi_impl(me: &Self, identity: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-        if iid.is_null() || ppv.is_null() {
-            return HRESULT(-2147467261);
-        }
-        let iid = &*iid;
-        if *iid == IUnknown::IID
-            || *iid == windows_core::IInspectable::IID
-            || *iid == windows_core::imp::IAgileObject::IID
-            || *iid == me.iids.iterable
-        {
-            *ppv = identity;
-            me.ref_count.add_ref();
-            S_OK
-        } else if *iid == me.iids.map_view {
-            *ppv = (identity as *const *const c_void).add(1) as *mut c_void;
-            me.ref_count.add_ref();
-            S_OK
-        } else if *iid == windows_core::imp::IMarshal::IID {
-            me.ref_count.add_ref();
-            windows_core::imp::marshaler(core::mem::transmute(identity), ppv)
-        } else {
-            *ppv = std::ptr::null_mut();
-            E_NOINTERFACE
-        }
-    }
-
-    // -- IInspectable stubs --
-    unsafe extern "system" fn get_iids_stub(_: *mut c_void, c: *mut u32, i: *mut *mut GUID) -> HRESULT { *c = 0; *i = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_rcn_stub(_: *mut c_void, n: *mut *mut c_void) -> HRESULT { *n = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_tl_stub(_: *mut c_void, l: *mut i32) -> HRESULT { *l = 0; S_OK }
-    unsafe extern "system" fn get_iids_stub2(_: *mut c_void, c: *mut u32, i: *mut *mut GUID) -> HRESULT { *c = 0; *i = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_rcn_stub2(_: *mut c_void, n: *mut *mut c_void) -> HRESULT { *n = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_tl_stub2(_: *mut c_void, l: *mut i32) -> HRESULT { *l = 0; S_OK }
+    dual_vtable_com!(iterable, view, map_view);
+    inspectable_stubs!(iterable, view);
 
     // -- IIterable --
 
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
-        let kvp_items: Vec<IUnknown> = me.entries.iter()
-            .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp))
+        let kvp_items: Vec<usize> = me.entries.iter()
+            .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw() as usize)
             .collect();
-        let iter = SingleThreadedIterator::create(kvp_items, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(kvp_items, false, me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -563,8 +412,8 @@ impl SingleThreadedKeyValuePair {
                 Release: Self::release,
             },
             get_iids: Self::get_iids_stub,
-            get_runtime_class_name: Self::get_rcn_stub,
-            get_trust_level: Self::get_tl_stub,
+            get_runtime_class_name: Self::get_runtime_class_name_stub,
+            get_trust_level: Self::get_trust_level_stub,
         },
         get_key: Self::get_key,
         get_value: Self::get_value,
@@ -581,43 +430,8 @@ impl SingleThreadedKeyValuePair {
         unsafe { IUnknown::from_raw(Box::into_raw(kvp) as *mut c_void) }
     }
 
-    unsafe extern "system" fn qi(this: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-        if iid.is_null() || ppv.is_null() {
-            return HRESULT(-2147467261);
-        }
-        let iid = &*iid;
-        let me = &*(this as *const Self);
-        if *iid == IUnknown::IID
-            || *iid == windows_core::IInspectable::IID
-            || *iid == windows_core::imp::IAgileObject::IID
-            || *iid == me.iid_kvp
-        {
-            *ppv = this;
-            me.ref_count.add_ref();
-            S_OK
-        } else if *iid == windows_core::imp::IMarshal::IID {
-            me.ref_count.add_ref();
-            windows_core::imp::marshaler(core::mem::transmute(this), ppv)
-        } else {
-            *ppv = std::ptr::null_mut();
-            E_NOINTERFACE
-        }
-    }
-
-    unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
-        (&*(this as *const Self)).ref_count.add_ref()
-    }
-
-    unsafe extern "system" fn release(this: *mut c_void) -> u32 {
-        let me = &*(this as *const Self);
-        let r = me.ref_count.release();
-        if r == 0 { drop(Box::from_raw(this as *mut Self)); }
-        r
-    }
-
-    unsafe extern "system" fn get_iids_stub(_: *mut c_void, c: *mut u32, i: *mut *mut GUID) -> HRESULT { *c = 0; *i = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_rcn_stub(_: *mut c_void, n: *mut *mut c_void) -> HRESULT { *n = std::ptr::null_mut(); S_OK }
-    unsafe extern "system" fn get_tl_stub(_: *mut c_void, l: *mut i32) -> HRESULT { *l = 0; S_OK }
+    single_vtable_com!(|me: &Self| me.iid_kvp);
+    inspectable_stubs!(stub);
 
     unsafe extern "system" fn get_key(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = &*(this as *const Self);

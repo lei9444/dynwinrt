@@ -310,6 +310,13 @@ impl MetadataTable {
                     .collect();
                 libffi::middle::Type::structure(field_types)
             }
+            // Pointer-sized types (COM objects, HString handle, etc.)
+            TypeKind::HString | TypeKind::Object | TypeKind::Interface(_)
+            | TypeKind::Delegate(_) | TypeKind::RuntimeClass(_)
+            | TypeKind::Parameterized(_)
+            | TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_)
+            | TypeKind::OutValue(_) | TypeKind::ArrayOfIUnknown => libffi::middle::Type::pointer(),
             _ => panic!("libffi_type_kind: unsupported for {:?}", kind),
         }
     }

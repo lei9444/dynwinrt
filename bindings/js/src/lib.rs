@@ -495,17 +495,14 @@ impl DynWinRTValue {
   }
 
   /// Create an IVector<T> from items. The element_type is used for IID computation.
-  /// Items are passed as DynWinRTValue objects (must be Object or Struct-wrapped values).
+  /// Items are passed as DynWinRTValue objects (Object or Struct-wrapped values).
   #[napi]
   pub fn create_vector(items: Vec<&DynWinRTValue>, element_type: &DynWinRTType) -> napi::Result<DynWinRTValue> {
     let iids = TABLE.vector_iids(&element_type.0);
-    let iunknown_items: Vec<IUnknown> = items.iter()
-      .map(|item| {
-        item.0.as_object()
-          .ok_or_else(|| napi::Error::from_reason("createVector: all items must be Object values"))
-      })
-      .collect::<napi::Result<Vec<_>>>()?;
-    let vector = dynwinrt::vector::create_vector(iunknown_items, iids);
+    let is_value_type = matches!(element_type.0.kind(), dynwinrt::TypeKind::Struct(_));
+    let elem_size = element_type.0.size_of();
+    let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
+    let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, is_value_type, elem_size, iids);
     Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
   }
 
