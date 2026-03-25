@@ -8,7 +8,7 @@ use windows_core::{GUID, HRESULT, IUnknown};
 use windows_future::{AsyncActionCompletedHandler, AsyncStatus};
 
 use crate::result::{Error, Result};
-use crate::metadata_table::{TypeKind, IASYNC_ACTION};
+use crate::metadata_table::IASYNC_ACTION;
 use crate::value::WinRTValue;
 
 // ---------------------------------------------------------------------------

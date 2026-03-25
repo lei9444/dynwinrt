@@ -45,8 +45,8 @@ pub fn initialize(options: WinAppSdkBootstrapOptions) -> windows::core::Result<W
 
     let module = unsafe { LoadLibraryW(dp) }?;
 
-    let methodName = CString::new(h!("MddBootstrapInitialize2").to_string()).unwrap();
-    let proc = unsafe { GetProcAddress(module, PCSTR::from_raw(methodName.as_ptr() as _)) };
+    let method_name = CString::new(h!("MddBootstrapInitialize2").to_string()).unwrap();
+    let proc = unsafe { GetProcAddress(module, PCSTR::from_raw(method_name.as_ptr() as _)) };
     if proc.is_none() {
         panic!("MddBootstrapInitialize2 not found in bootstrap DLL");
     }
@@ -76,6 +76,7 @@ pub fn initialize(options: WinAppSdkBootstrapOptions) -> windows::core::Result<W
     Ok(WinAppSdkContext {})
 }
 
+#[allow(dead_code)]
 pub fn find_winappsdk_package(
     major: u32,
     minor: u32,

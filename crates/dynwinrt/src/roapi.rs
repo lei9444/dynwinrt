@@ -4,6 +4,7 @@ use windows_core::{HSTRING, HRESULT, IUnknown, Interface, PCSTR};
 
 use crate::value::WinRTValue;
 
+#[allow(dead_code)]
 pub fn ro_get_activation_factory(class_name: &HSTRING) -> windows_core::Result<IActivationFactory> {
     unsafe { RoGetActivationFactory::<IActivationFactory>(class_name) }
 }
@@ -89,6 +90,7 @@ fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValu
     None
 }
 
+#[allow(dead_code)]
 pub fn query_interface(obj: WinRTValue, iid: &windows_core::GUID) -> windows_core::Result<WinRTValue> {
     let mut result = std::ptr::null_mut();
     let unk = obj.as_object().unwrap();

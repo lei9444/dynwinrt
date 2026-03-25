@@ -41,7 +41,7 @@ impl AsyncInfo {
 
     pub fn result_type(&self) -> Option<TypeHandle> {
         match self.async_type.kind() {
-            TypeKind::IAsyncOperation(idx) | TypeKind::IAsyncOperationWithProgress(idx) => {
+            TypeKind::IAsyncOperation(_idx) | TypeKind::IAsyncOperationWithProgress(_idx) => {
                 let inner = match self.async_type.kind() {
                     TypeKind::IAsyncOperation(idx) => {
                         self.async_type.table().get_inner_type(idx)

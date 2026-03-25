@@ -29,3 +29,6 @@ target
 **/node_modules
 bench-electron/out/
 **/build
+
+# Claude Code local settings
+**/settings.local.json
