@@ -36,7 +36,9 @@ pub struct MethodSignature {
     out_count: usize,
     parameters: Vec<Parameter>,
     return_type: TypeHandle,
+    #[allow(dead_code)]
     is_opaque: bool,
+    #[allow(dead_code)]
     table: Arc<MetadataTable>,
 }
 
@@ -438,6 +440,7 @@ pub struct InterfaceSignature {
     pub name: String,
     pub iid: windows_core::GUID,
     pub methods: Vec<Method>,
+    #[allow(dead_code)]
     table: Arc<MetadataTable>,
 }
 
@@ -474,6 +477,7 @@ impl InterfaceSignature {
     }
 }
 
+#[allow(dead_code)]
 pub struct RuntimeClassSignature {
     name: HSTRING,
     static_interfaces: Vec<InterfaceSignature>,

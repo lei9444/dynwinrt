@@ -4,7 +4,7 @@ use windows_core::GUID;
 
 use super::MetadataTable;
 use super::type_kind::TypeKind;
-use crate::signature::{Method, MethodSignature};
+use crate::signature::MethodSignature;
 use crate::value::WinRTValue;
 
 // ===========================================================================

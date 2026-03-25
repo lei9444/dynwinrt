@@ -1116,7 +1116,7 @@ unsafe impl Sync for StaticUri {}
 
 /// Pre-created opaque COM object for static benchmark (factory results).
 #[napi]
-pub struct StaticObj(windows::core::IInspectable);
+pub struct StaticObj(#[allow(dead_code)] windows::core::IInspectable);
 unsafe impl Send for StaticObj {}
 unsafe impl Sync for StaticObj {}
 
