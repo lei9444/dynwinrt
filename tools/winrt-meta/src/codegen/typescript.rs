@@ -1,7 +1,11 @@
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
+
+/// Empty set passed as `deferred` for TypeScript codegen (no circular dep handling needed).
+static NO_DEFERRED: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
 
 /// Generate an index.ts that re-exports all generated types.
 pub fn generate_index(classes: &[ClassMeta], interfaces: &[InterfaceMeta], enums: &[TypeMeta]) -> String {
@@ -916,7 +920,7 @@ fn generate_static_method_invoke(
             "_{}.method({}).invoke({}, [])",
             iface.name, method.vtable_index, statics_call
         );
-        let converted = convert_return(&invoke_expr, return_type, false, known_types);
+        let converted = convert_return(&invoke_expr, return_type, false, known_types, &NO_DEFERRED);
         out.push_str(&format!("        return {};\n", converted));
         out.push_str("    }\n");
     } else {
@@ -930,7 +934,7 @@ fn generate_static_method_invoke(
             "_{}.method({}).invoke({}, [{}])",
             iface.name, method.vtable_index, statics_call, args_expr
         );
-        let converted = convert_return(&invoke_expr, return_type, is_async, known_types);
+        let converted = convert_return(&invoke_expr, return_type, is_async, known_types, &NO_DEFERRED);
         out.push_str(&format!("        return {};\n", converted));
         out.push_str("    }\n");
     }
@@ -1041,7 +1045,7 @@ fn generate_method_body(
         let converted = if is_delegate_type(return_type) {
             invoke_expr.clone()
         } else {
-            convert_return(&invoke_expr, return_type, false, known_types)
+            convert_return(&invoke_expr, return_type, false, known_types, &NO_DEFERRED)
         };
         out.push_str(&format!("        return {};\n", converted));
         out.push_str("    }\n");
@@ -1098,10 +1102,10 @@ fn generate_method_body(
             out.push_str(&format!("        {};\n", invoke_expr));
         } else if let Some(elem) = array_out_elem {
             let arr_expr = format!("{}.asArray()", invoke_expr);
-            let converted = convert_array_return(&arr_expr, elem, known_types);
+            let converted = convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED);
             out.push_str(&format!("        return {};\n", converted));
         } else {
-            let converted = convert_return(&invoke_expr, return_type, is_async, known_types);
+            let converted = convert_return(&invoke_expr, return_type, is_async, known_types, &NO_DEFERRED);
             out.push_str(&format!("        return {};\n", converted));
         }
         out.push_str("    }\n");
@@ -1154,7 +1158,16 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
 // ======================================================================
 
 /// Convert an array return expression to the appropriate JS array type.
-pub(crate) fn convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+/// Resolve a type name, using `_m_X.X` for deferred (lazy module ref) imports.
+pub(crate) fn resolve_type_name(name: &str, deferred: &HashSet<String>) -> String {
+    if deferred.contains(name) {
+        format!("_m_{0}.{0}", name)
+    } else {
+        name.to_string()
+    }
+}
+
+pub(crate) fn convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types: &HashSet<String>, deferred: &HashSet<String>) -> String {
     match inner {
         TypeMeta::I8 => format!("{}.toI8Vec()", arr_expr),
         TypeMeta::U8 => format!("{}.toU8Vec()", arr_expr),
@@ -1172,10 +1185,12 @@ pub(crate) fn convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("{}.toI32Vec()", arr_expr),
         TypeMeta::Struct { name, .. } => format!("{}.toValues().map(v => _unpack{}(v))", arr_expr, name),
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
-            format!("{}.toValues().map(v => new {}(v))", arr_expr, name)
+            let r = resolve_type_name(name, deferred);
+            format!("{}.toValues().map(v => new {}(v))", arr_expr, r)
         }
         TypeMeta::Interface { name, .. } if known_types.contains(name) => {
-            format!("{}.toValues().map(v => new {}(v))", arr_expr, name)
+            let r = resolve_type_name(name, deferred);
+            format!("{}.toValues().map(v => new {}(v))", arr_expr, r)
         }
         _ => format!("{}.toValues()", arr_expr),
     }
@@ -1197,7 +1212,7 @@ fn ts_array_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> Str
     }
 }
 
-pub(crate) fn convert_return(expr: &str, return_type: Option<&TypeMeta>, is_async: bool, known_types: &HashSet<String>) -> String {
+pub(crate) fn convert_return(expr: &str, return_type: Option<&TypeMeta>, is_async: bool, known_types: &HashSet<String>, deferred: &HashSet<String>) -> String {
     if is_async {
         let inner_type = match return_type {
             Some(TypeMeta::AsyncOperation(inner)) => Some(inner.as_ref()),
@@ -1205,7 +1220,7 @@ pub(crate) fn convert_return(expr: &str, return_type: Option<&TypeMeta>, is_asyn
             _ => None,
         };
         let awaited = format!("(await {}.toPromise())", expr);
-        return convert_return(&awaited, inner_type, false, known_types);
+        return convert_return(&awaited, inner_type, false, known_types, deferred);
     }
     match return_type {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => format!("{}.toString()", expr),
@@ -1216,25 +1231,28 @@ pub(crate) fn convert_return(expr: &str, return_type: Option<&TypeMeta>, is_asyn
         Some(TypeMeta::Bool) => format!("{}.toBool()", expr),
         Some(TypeMeta::Enum { .. }) => format!("{}.toNumber()", expr),
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
-            format!("new {}({})", name, expr)
+            let r = resolve_type_name(name, deferred);
+            format!("new {}({})", r, expr)
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.toNumber()", expr),
         Some(TypeMeta::Struct { name, .. }) => format!("_unpack{}({})", name, expr),
         Some(TypeMeta::Delegate { .. }) => expr.to_string(),
         Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
-            format!("new {}({})", name, expr)
+            let r = resolve_type_name(name, deferred);
+            format!("new {}({})", r, expr)
         }
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             let concrete = crate::meta::make_parameterized_name(name, args);
             if known_types.contains(&concrete) {
-                format!("new {}({})", concrete, expr)
+                let r = resolve_type_name(&concrete, deferred);
+                format!("new {}({})", r, expr)
             } else {
                 expr.to_string()
             }
         }
         Some(TypeMeta::Array(inner)) => {
             let arr_expr = format!("{}.asArray()", expr);
-            convert_array_return(&arr_expr, inner, known_types)
+            convert_array_return(&arr_expr, inner, known_types, deferred)
         }
         _ => expr.to_string(),
     }
