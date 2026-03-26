@@ -19,6 +19,7 @@ features = [
     "ApplicationModel",
     "Data_Xml_Dom",
     "Devices_Geolocation",
+    "Storage_Streams",
     "System_Threading",
     "Web_Http",
     "Win32_System_Com",

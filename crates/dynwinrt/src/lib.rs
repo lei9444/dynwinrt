@@ -25,6 +25,7 @@ pub use crate::metadata_table::{TypeHandle, TypeKind, MetadataTable, MethodHandl
 pub use crate::array::ArrayData;
 pub use crate::value::WinRTValue;
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
+pub use crate::dasync::{create_progress_handler, ProgressCallback};
 pub use interfaces::uri_vtable;
 
 pub async fn get_async_string(op_string: windows_future::IAsyncOperation<HSTRING>) -> windows_core::Result<String> {

@@ -209,6 +209,10 @@ impl TypeHandle {
         self.table.completed_handler_iid_kind(self.kind)
     }
 
+    pub fn progress_handler_iid(&self) -> Option<GUID> {
+        self.table.progress_handler_iid_kind(self.kind)
+    }
+
     pub fn is_array(&self) -> bool {
         matches!(self.kind, TypeKind::Array(_))
     }

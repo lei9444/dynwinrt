@@ -39,6 +39,12 @@ pub const ASYNC_ACTION_WITH_PROGRESS_COMPLETED_HANDLER: GUID =
 pub const ASYNC_OPERATION_WITH_PROGRESS_COMPLETED_HANDLER: GUID =
     GUID::from_u128(0xe85df41d_6aa7_46e3_a8e2_f009d840c627);
 
+// Progress handler PIIDs
+pub const ASYNC_ACTION_PROGRESS_HANDLER: GUID =
+    GUID::from_u128(0x6d844858_0cff_4590_ae89_95a5a5c8b4b8);
+pub const ASYNC_OPERATION_PROGRESS_HANDLER: GUID =
+    GUID::from_u128(0x55690902_0aab_421a_8778_f8ce5026d758);
+
 // ===========================================================================
 // TypeKind — unified type discriminator (Copy)
 // ===========================================================================

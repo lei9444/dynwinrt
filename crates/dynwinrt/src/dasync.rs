@@ -165,14 +165,19 @@ impl WinRTAsyncFuture {
         let (_, get_results_index) = self.vtable_indices();
 
         if let Some(rt) = self.async_info.result_type() {
-            let mut out = std::ptr::null_mut();
+            let mut out = rt.default_winrt_value();
             let hr = crate::call::call_winrt_method_1(
                 get_results_index,
                 concrete.as_raw(),
-                &mut out,
+                out.out_ptr(),
             );
             hr.ok().map_err(Error::WindowsError)?;
-            rt.from_out(out)
+            // Pointer types use RawPtr(null) as buffer; convert via from_out.
+            if let WinRTValue::RawPtr(raw_ptr) = out {
+                out = rt.from_out(raw_ptr)?;
+            }
+            out.sanitize_null_object();
+            Ok(out)
         } else {
             let mut dummy: *mut std::ffi::c_void = std::ptr::null_mut();
             let hr = crate::call::call_winrt_method_1(
@@ -282,6 +287,43 @@ impl IntoFuture for &WinRTValue {
 }
 
 // ---------------------------------------------------------------------------
+// Progress handler — reuses delegate infrastructure
+// ---------------------------------------------------------------------------
+
+use crate::metadata_table::TypeHandle;
+
+/// Callback type for progress notifications.
+pub type ProgressCallback = Box<dyn Fn(WinRTValue) + Send + Sync>;
+
+/// Create a progress handler for a WithProgress async operation.
+///
+/// Reuses `delegate::create_delegate` — the progress handler is simply a
+/// COM delegate with `Invoke(sender, progress_value)`.
+///
+/// - `handler_iid`: parameterized IID of the progress handler delegate
+/// - `progress_type`: TypeHandle for the progress value type
+/// - `callback`: called on each progress notification (may be called from a WinRT background thread)
+pub fn create_progress_handler(
+    handler_iid: GUID,
+    progress_type: TypeHandle,
+    callback: ProgressCallback,
+) -> IUnknown {
+    // Progress handler Invoke signature: (sender: Object, progress: TProgress)
+    let sender_type = progress_type.table().make(crate::metadata_table::TypeKind::Object);
+    let param_types = vec![sender_type, progress_type];
+
+    let delegate_callback: crate::delegate::DelegateCallback = Box::new(move |args: &[WinRTValue]| {
+        // args[0] = sender, args[1] = progress value
+        if args.len() >= 2 {
+            callback(args[1].clone());
+        }
+        HRESULT(0)
+    });
+
+    crate::delegate::create_delegate(handler_iid, param_types, delegate_callback)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -294,6 +336,30 @@ mod tests {
     use crate::result::{Error, Result};
     use crate::value::{AsyncInfo, WinRTValue};
     use crate::metadata_table::MetadataTable;
+
+    /// Verify SetProgress is at the same vtable offset for both WithProgress types.
+    #[test]
+    fn test_set_progress_vtable_offset_matches() {
+        use windows_future::{
+            IAsyncActionWithProgress_Vtbl,
+            IAsyncOperationWithProgress_Vtbl,
+        };
+
+        let action_offset = std::mem::offset_of!(IAsyncActionWithProgress_Vtbl<u32>, SetProgress);
+        let operation_offset = std::mem::offset_of!(IAsyncOperationWithProgress_Vtbl<u64, u32>, SetProgress);
+
+        assert_eq!(action_offset, operation_offset,
+            "SetProgress vtable offset mismatch: ActionWithProgress={} vs OperationWithProgress={}",
+            action_offset, operation_offset);
+
+        // Also verify it's at index 6: 6 function pointers * pointer_size
+        let expected = 6 * std::mem::size_of::<usize>();
+        assert_eq!(action_offset, expected,
+            "SetProgress should be at vtable index 6 (offset {}), got {}",
+            expected, action_offset);
+
+        println!("SetProgress offset: {} (vtable index 6) -- both types match", action_offset);
+    }
 
     #[tokio::test]
     async fn test_async_action() -> Result<()> {
@@ -311,6 +377,298 @@ mod tests {
         });
         let _result = value.await?;
         println!("IAsyncAction completed successfully");
+        Ok(())
+    }
+
+    /// Verify progress handler IID computation matches windows-rs for known types.
+    #[test]
+    fn test_progress_handler_iid_u64_u64() {
+        use crate::metadata_table::TypeKind;
+
+        let reg = MetadataTable::new();
+        let t_u64 = reg.make(TypeKind::U64);
+        let p_u64 = reg.make(TypeKind::U64);
+        let async_type = reg.async_operation_with_progress(&t_u64, &p_u64);
+
+        // Compute our progress handler IID
+        let our_iid = async_type.progress_handler_iid()
+            .expect("should compute progress handler IID");
+
+        // Expected IID from windows-rs:
+        // AsyncOperationProgressHandler<u64, u64>
+        let expected_iid = <windows_future::AsyncOperationProgressHandler<u64, u64>
+            as Interface>::IID;
+
+        assert_eq!(our_iid, expected_iid,
+            "Progress handler IID mismatch for <u64, u64>: ours={:?} expected={:?}",
+            our_iid, expected_iid);
+        println!("Progress handler IID for <u64, u64>: {:?}", our_iid);
+    }
+
+    /// Test SetProgress on a real IAsyncOperationWithProgress using HTTP BufferAllAsync.
+    #[tokio::test]
+    async fn test_progress_handler_with_http() -> Result<()> {
+        use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+        use crate::metadata_table::TypeKind;
+
+        // Create an HTTP client and make a request to get an IAsyncOperationWithProgress<u64, u64>
+        let client = windows::Web::Http::HttpClient::new()
+            .map_err(Error::WindowsError)?;
+        let uri = windows::Foundation::Uri::CreateUri(
+            &windows_core::HSTRING::from("https://httpbin.org/bytes/1024"),
+        ).map_err(Error::WindowsError)?;
+
+        let response_op = client.GetAsync(&uri)
+            .map_err(Error::WindowsError)?;
+        let response = response_op.await
+            .map_err(Error::WindowsError)?;
+        let content = response.Content()
+            .map_err(Error::WindowsError)?;
+
+        // BufferAllAsync returns IAsyncOperationWithProgress<u64, u64>
+        let buffer_op = content.BufferAllAsync()
+            .map_err(Error::WindowsError)?;
+
+        // Wrap as our dynamic type
+        let info: IAsyncInfo = buffer_op.cast()
+            .map_err(Error::WindowsError)?;
+
+        let reg = MetadataTable::new();
+        let t_u64 = reg.make(TypeKind::U64);
+        let p_u64 = reg.make(TypeKind::U64);
+        let async_type = reg.async_operation_with_progress(&t_u64, &p_u64);
+
+        let async_info = AsyncInfo {
+            info,
+            async_type: async_type.clone(),
+        };
+
+        // Set up progress handler
+        let progress_count = Arc::new(AtomicU32::new(0));
+        let progress_count2 = progress_count.clone();
+
+        let progress_type = async_info.progress_type()
+            .expect("should have progress type");
+        let handler_iid = async_info.progress_handler_iid()
+            .expect("should have handler IID");
+
+        let progress_cb: super::ProgressCallback = Box::new(move |val: WinRTValue| {
+            println!("Progress callback fired: {:?}", val);
+            progress_count2.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let handler = super::create_progress_handler(handler_iid, progress_type, progress_cb);
+
+        // Call SetProgress - this is what was crashing
+        async_info.set_progress_handler(&handler)
+            .expect("SetProgress should succeed");
+
+        println!("SetProgress succeeded! Awaiting result...");
+
+        // Await the result
+        let value = WinRTValue::Async(async_info);
+        let result = value.await?;
+        println!("BufferAllAsync completed: {:?}", result);
+        println!("Progress callbacks received: {}", progress_count.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    /// Verify completed handler IID for IAsyncOperationWithProgress<u64,u64>
+    #[test]
+    fn test_completed_handler_iid_u64_u64() {
+        use crate::metadata_table::TypeKind;
+
+        let reg = MetadataTable::new();
+        let t_u64 = reg.make(TypeKind::U64);
+        let p_u64 = reg.make(TypeKind::U64);
+        let async_type = reg.async_operation_with_progress(&t_u64, &p_u64);
+
+        let our_iid = async_type.completed_handler_iid()
+            .expect("should compute completed handler IID");
+
+        let expected_iid = <windows_future::AsyncOperationWithProgressCompletedHandler<u64, u64>
+            as Interface>::IID;
+
+        assert_eq!(our_iid, expected_iid,
+            "Completed handler IID mismatch: ours={:?} expected={:?}",
+            our_iid, expected_iid);
+        println!("Completed handler IID for <u64, u64>: {:?}", our_iid);
+    }
+
+    /// Verify async interface IID for IAsyncOperationWithProgress<u64,u64>
+    #[test]
+    fn test_async_iid_u64_u64() {
+        use crate::metadata_table::TypeKind;
+
+        let reg = MetadataTable::new();
+        let t_u64 = reg.make(TypeKind::U64);
+        let p_u64 = reg.make(TypeKind::U64);
+        let async_type = reg.async_operation_with_progress(&t_u64, &p_u64);
+
+        let our_iid = async_type.iid()
+            .expect("should compute async IID");
+
+        let expected_iid = <windows_future::IAsyncOperationWithProgress<u64, u64>
+            as Interface>::IID;
+
+        assert_eq!(our_iid, expected_iid,
+            "Async IID mismatch: ours={:?} expected={:?}",
+            our_iid, expected_iid);
+        println!("Async IID for IAsyncOperationWithProgress<u64, u64>: {:?}", our_iid);
+    }
+
+    /// Test await on WithProgress WITHOUT setting progress handler (baseline).
+    #[tokio::test]
+    async fn test_with_progress_no_handler() -> Result<()> {
+        use crate::metadata_table::TypeKind;
+
+        let client = windows::Web::Http::HttpClient::new()
+            .map_err(Error::WindowsError)?;
+        let uri = windows::Foundation::Uri::CreateUri(
+            &windows_core::HSTRING::from("https://httpbin.org/bytes/1024"),
+        ).map_err(Error::WindowsError)?;
+
+        let response_op = client.GetAsync(&uri)
+            .map_err(Error::WindowsError)?;
+        let response = response_op.await
+            .map_err(Error::WindowsError)?;
+        let content = response.Content()
+            .map_err(Error::WindowsError)?;
+
+        let buffer_op = content.BufferAllAsync()
+            .map_err(Error::WindowsError)?;
+
+        let info: IAsyncInfo = buffer_op.cast()
+            .map_err(Error::WindowsError)?;
+
+        let reg = MetadataTable::new();
+        let t_u64 = reg.make(TypeKind::U64);
+        let p_u64 = reg.make(TypeKind::U64);
+        let async_type = reg.async_operation_with_progress(&t_u64, &p_u64);
+
+        let value = WinRTValue::Async(AsyncInfo {
+            info,
+            async_type,
+        });
+
+        let result = value.await?;
+        println!("WithProgress (no handler) completed: {:?}", result);
+        Ok(())
+    }
+
+    /// Verify get_results for IAsyncOperationWithProgress<u32, u32> (WriteAsync).
+    /// Compares dynwinrt result against windows-rs typed result.
+    #[tokio::test]
+    async fn test_get_results_u32_write_async() -> Result<()> {
+        use crate::metadata_table::TypeKind;
+        use windows::Storage::Streams::{InMemoryRandomAccessStream, IOutputStream, Buffer, IBuffer};
+
+        let stream = InMemoryRandomAccessStream::new().map_err(Error::WindowsError)?;
+        let output: IOutputStream = stream.cast().map_err(Error::WindowsError)?;
+
+        let buf_size: u32 = 1234;
+        let buffer = Buffer::Create(buf_size).map_err(Error::WindowsError)?;
+        buffer.SetLength(buf_size).map_err(Error::WindowsError)?;
+
+        // windows-rs typed call for reference
+        let typed_op = output.WriteAsync(&buffer).map_err(Error::WindowsError)?;
+        let typed_result = typed_op.await.map_err(Error::WindowsError)?;
+        println!("windows-rs WriteAsync result: {} bytes", typed_result);
+        assert_eq!(typed_result, buf_size);
+
+        // Now test via dynwinrt
+        let buffer2 = Buffer::Create(buf_size).map_err(Error::WindowsError)?;
+        buffer2.SetLength(buf_size).map_err(Error::WindowsError)?;
+
+        let dyn_op = output.WriteAsync(&buffer2).map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = dyn_op.cast().map_err(Error::WindowsError)?;
+
+        let reg = MetadataTable::new();
+        let t_u32 = reg.make(TypeKind::U32);
+        let p_u32 = reg.make(TypeKind::U32);
+        let async_type = reg.async_operation_with_progress(&t_u32, &p_u32);
+
+        let value = WinRTValue::Async(AsyncInfo { info, async_type });
+        let result = value.await?;
+        println!("dynwinrt WriteAsync result: {:?}", result);
+
+        match result {
+            WinRTValue::U32(v) => assert_eq!(v, buf_size, "u32 result mismatch"),
+            other => panic!("Expected U32, got {:?}", other),
+        }
+
+        println!("get_results u32 verification passed!");
+        Ok(())
+    }
+
+    /// Verify get_results for IAsyncOperationWithProgress<u64, u64> (BufferAllAsync).
+    /// Compares dynwinrt result against windows-rs typed result.
+    #[tokio::test]
+    async fn test_get_results_u64_buffer_all() -> Result<()> {
+        use crate::metadata_table::TypeKind;
+        use windows::Storage::Streams::{InMemoryRandomAccessStream, IOutputStream, IInputStream, Buffer, IBuffer};
+
+        let stream = InMemoryRandomAccessStream::new().map_err(Error::WindowsError)?;
+        let output: IOutputStream = stream.cast().map_err(Error::WindowsError)?;
+
+        // Write some data first
+        let data_size: u32 = 2048;
+        let buffer = Buffer::Create(data_size).map_err(Error::WindowsError)?;
+        buffer.SetLength(data_size).map_err(Error::WindowsError)?;
+        output.WriteAsync(&buffer).map_err(Error::WindowsError)?.await.map_err(Error::WindowsError)?;
+
+        // Seek to beginning and read via InputStreamOptions
+        stream.Seek(0).map_err(Error::WindowsError)?;
+        let input: IInputStream = stream.cast().map_err(Error::WindowsError)?;
+        let read_buf = Buffer::Create(data_size).map_err(Error::WindowsError)?;
+
+        // ReadAsync returns IAsyncOperationWithProgress<IBuffer, u32>
+        // Instead, use the content pattern: windows-rs typed first, then dynwinrt
+        // BufferAllAsync on HttpContent is IAsyncOperationWithProgress<u64, u64>
+        // but we need network. Use WriteAsync u32 instead (already tested above).
+
+        // Just verify the u64 case from the no_handler test produced correct value
+        let client = windows::Web::Http::HttpClient::new().map_err(Error::WindowsError)?;
+        let uri = windows::Foundation::Uri::CreateUri(
+            &windows_core::HSTRING::from("https://httpbin.org/bytes/512"),
+        ).map_err(Error::WindowsError)?;
+
+        let response = client.GetAsync(&uri).map_err(Error::WindowsError)?
+            .await.map_err(Error::WindowsError)?;
+        let content = response.Content().map_err(Error::WindowsError)?;
+
+        // windows-rs typed
+        let typed_result = content.BufferAllAsync().map_err(Error::WindowsError)?
+            .await.map_err(Error::WindowsError)?;
+        println!("windows-rs BufferAllAsync: {} bytes", typed_result);
+        assert_eq!(typed_result, 512u64);
+
+        // dynwinrt
+        let uri2 = windows::Foundation::Uri::CreateUri(
+            &windows_core::HSTRING::from("https://httpbin.org/bytes/512"),
+        ).map_err(Error::WindowsError)?;
+        let response2 = client.GetAsync(&uri2).map_err(Error::WindowsError)?
+            .await.map_err(Error::WindowsError)?;
+        let content2 = response2.Content().map_err(Error::WindowsError)?;
+        let dyn_op = content2.BufferAllAsync().map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = dyn_op.cast().map_err(Error::WindowsError)?;
+
+        let reg = MetadataTable::new();
+        let t_u64 = reg.make(TypeKind::U64);
+        let p_u64 = reg.make(TypeKind::U64);
+        let async_type = reg.async_operation_with_progress(&t_u64, &p_u64);
+
+        let value = WinRTValue::Async(AsyncInfo { info, async_type });
+        let result = value.await?;
+        println!("dynwinrt BufferAllAsync: {:?}", result);
+
+        match result {
+            WinRTValue::U64(v) => assert_eq!(v, 512u64, "u64 result mismatch"),
+            other => panic!("Expected U64, got {:?}", other),
+        }
+
+        println!("get_results u64 verification passed!");
         Ok(())
     }
 }

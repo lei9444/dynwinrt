@@ -56,6 +56,50 @@ impl AsyncInfo {
             _ => None,
         }
     }
+
+    pub fn progress_type(&self) -> Option<TypeHandle> {
+        match self.async_type.kind() {
+            TypeKind::IAsyncActionWithProgress(idx) => {
+                let inner = self.async_type.table().get_inner_type(idx);
+                Some(self.async_type.table().make(inner))
+            }
+            TypeKind::IAsyncOperationWithProgress(idx) => {
+                let (_, progress) = self.async_type.table().get_inner_type_pair(idx);
+                Some(self.async_type.table().make(progress))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn progress_handler_iid(&self) -> Option<GUID> {
+        self.async_type.progress_handler_iid()
+    }
+
+    /// Register a progress handler on a WithProgress async operation (vtable index 6 = put_Progress).
+    pub fn set_progress_handler(&self, handler: &IUnknown) -> result::Result<()> {
+        match self.async_type.kind() {
+            TypeKind::IAsyncActionWithProgress(_) | TypeKind::IAsyncOperationWithProgress(_) => {
+                let iid = self.iid();
+                let mut concrete_ptr = std::ptr::null_mut();
+                unsafe { self.info.query(&iid, &mut concrete_ptr) }
+                    .ok()
+                    .map_err(result::Error::WindowsError)?;
+                let concrete = unsafe { IUnknown::from_raw(concrete_ptr) };
+                // put_Progress is at vtable index 6 for WithProgress types
+                // (IUnknown[0-2], IInspectable[3-5], put_Progress[6])
+                let hr = crate::call::call_winrt_method_1(
+                    6,
+                    concrete.as_raw(),
+                    handler.as_raw(),
+                );
+                hr.ok().map_err(result::Error::WindowsError)?;
+                Ok(())
+            }
+            _ => Err(result::Error::WindowsError(
+                windows_core::Error::from_hresult(windows_core::HRESULT(0x80070057u32 as i32))
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

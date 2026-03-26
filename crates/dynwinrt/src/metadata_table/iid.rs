@@ -119,6 +119,26 @@ impl MetadataTable {
         Some(self.compute_parameterized_iid(&handler_piid, &self.async_type_args(kind)))
     }
 
+    pub(crate) fn progress_handler_iid_kind(&self, kind: TypeKind) -> Option<GUID> {
+        let handler_piid = match kind {
+            TypeKind::IAsyncActionWithProgress(_) => ASYNC_ACTION_PROGRESS_HANDLER,
+            TypeKind::IAsyncOperationWithProgress(_) => ASYNC_OPERATION_PROGRESS_HANDLER,
+            _ => return None,
+        };
+        // Progress handler type args:
+        // - IAsyncActionWithProgress<P>: handler is AsyncActionProgressHandler<P> → [P]
+        // - IAsyncOperationWithProgress<T,P>: handler is AsyncOperationProgressHandler<T,P> → [T, P]
+        let progress_args = match kind {
+            TypeKind::IAsyncActionWithProgress(idx) => vec![self.get_inner_type(idx)],
+            TypeKind::IAsyncOperationWithProgress(idx) => {
+                let (result_type, progress_type) = self.get_inner_type_pair(idx);
+                vec![result_type, progress_type]
+            }
+            _ => return None,
+        };
+        Some(self.compute_parameterized_iid(&handler_piid, &progress_args))
+    }
+
     fn parameterized_piid(&self, kind: TypeKind) -> GUID {
         match kind {
             TypeKind::Parameterized(idx) => {

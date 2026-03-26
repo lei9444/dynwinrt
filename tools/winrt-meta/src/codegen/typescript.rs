@@ -905,7 +905,9 @@ fn generate_static_method_invoke(
     let ts_params = ts_param_list(&in_params, known_types);
 
     let return_type = method.return_type.as_ref();
-    let is_async = return_type.is_some_and(|rt| rt.is_async());
+    let is_with_progress = return_type.is_some_and(|rt| matches!(rt,
+        TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)));
+    let is_async = return_type.is_some_and(|rt| rt.is_async()) && !is_with_progress;
     let ts_return = ts_return_type_safe(return_type, is_async, known_types);
 
     let mut out = String::new();
@@ -934,8 +936,23 @@ fn generate_static_method_invoke(
             "_{}.method({}).invoke({}, [{}])",
             iface.name, method.vtable_index, statics_call, args_expr
         );
-        let converted = convert_return(&invoke_expr, return_type, is_async, known_types, &NO_DEFERRED);
-        out.push_str(&format!("        return {};\n", converted));
+        if is_with_progress {
+            let inner_type = match return_type {
+                Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
+                _ => None,
+            };
+            let inner_convert = convert_return("await _op.toPromise()", inner_type, false, known_types, &NO_DEFERRED);
+            out.push_str(&format!("        const _op = {};\n", invoke_expr));
+            out.push_str(         "        const _w = {\n");
+            out.push_str(         "            progress(cb: (value: DynWinRtValue) => void) { _op.onProgress(cb); return _w; },\n");
+            out.push_str(&format!("            async toPromise() {{ return {}; }},\n", inner_convert));
+            out.push_str(         "            then(res: any, rej: any) { return _w.toPromise().then(res, rej); },\n");
+            out.push_str(         "        };\n");
+            out.push_str(         "        return _w;\n");
+        } else {
+            let converted = convert_return(&invoke_expr, return_type, is_async, known_types, &NO_DEFERRED);
+            out.push_str(&format!("        return {};\n", converted));
+        }
         out.push_str("    }\n");
     }
     out
@@ -963,7 +980,9 @@ fn generate_method_body(
 ) -> String {
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
-    let is_async = return_type.is_some_and(|rt| rt.is_async());
+    let is_with_progress = return_type.is_some_and(|rt| matches!(rt,
+        TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)));
+    let is_async = return_type.is_some_and(|rt| rt.is_async()) && !is_with_progress;
     // Methods with array out params (ReceiveArray/FillArray) return the array even without retval
     let has_array_out = method.params.iter().any(|p| {
         (p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill)
@@ -1098,7 +1117,20 @@ fn generate_method_body(
             iface_var, method.vtable_index, obj_expr, args_expr
         );
 
-        if !has_return && !is_async {
+        if is_with_progress {
+            let inner_type = match return_type {
+                Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
+                _ => None,
+            };
+            let inner_convert = convert_return("await _op.toPromise()", inner_type, false, known_types, &NO_DEFERRED);
+            out.push_str(&format!("        const _op = {};\n", invoke_expr));
+            out.push_str(         "        const _w = {\n");
+            out.push_str(         "            progress(cb: (value: DynWinRtValue) => void) { _op.onProgress(cb); return _w; },\n");
+            out.push_str(&format!("            async toPromise() {{ return {}; }},\n", inner_convert));
+            out.push_str(         "            then(res: any, rej: any) { return _w.toPromise().then(res, rej); },\n");
+            out.push_str(         "        };\n");
+            out.push_str(         "        return _w;\n");
+        } else if !has_return && !is_async {
             out.push_str(&format!("        {};\n", invoke_expr));
         } else if let Some(elem) = array_out_elem {
             let arr_expr = format!("{}.asArray()", invoke_expr);
@@ -1303,7 +1335,11 @@ fn ts_return_type_safe(typ: Option<&TypeMeta>, is_async: bool, known: &HashSet<S
             format!("Promise<{}>", ts_return_type_safe(Some(inner), false, known))
         }
         Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
-            format!("Promise<{}>", ts_return_type_safe(Some(result), false, known))
+            let inner = ts_return_type_safe(Some(result), false, known);
+            format!("{{ progress(cb: (value: DynWinRtValue) => void): any; toPromise(): Promise<{}>; then(res: any, rej: any): Promise<{}>; }}", inner, inner)
+        }
+        Some(TypeMeta::AsyncActionWithProgress(_)) => {
+            "{ progress(cb: (value: DynWinRtValue) => void): any; toPromise(): Promise<void>; then(res: any, rej: any): Promise<void>; }".to_string()
         }
         Some(TypeMeta::Array(inner)) => {
             let s = ts_array_element_type(inner, known);
@@ -1337,10 +1373,13 @@ fn ts_return_type(typ: Option<&TypeMeta>, is_async: bool) -> String {
             return format!("Promise<{}>", ts_return_type(Some(inner), false));
         }
         Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
-            return format!("Promise<{}>", ts_return_type(Some(result), false));
+            let inner = ts_return_type(Some(result), false);
+            return format!("{{ progress(cb: (value: DynWinRtValue) => void): any; toPromise(): Promise<{}>; then(res: any, rej: any): Promise<{}>; }}", inner, inner);
         }
         Some(TypeMeta::AsyncAction) => return "Promise<void>".to_string(),
-        Some(TypeMeta::AsyncActionWithProgress(_)) => return "Promise<void>".to_string(),
+        Some(TypeMeta::AsyncActionWithProgress(_)) => {
+            return "{ progress(cb: (value: DynWinRtValue) => void): any; toPromise(): Promise<void>; then(res: any, rej: any): Promise<void>; }".to_string();
+        }
         Some(TypeMeta::Array(inner)) => {
             let s = ts_array_element_type(inner, &HashSet::new());
             return if is_async { format!("Promise<{}>", s) } else { s };

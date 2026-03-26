@@ -729,7 +729,9 @@ fn generate_js_static_method_invoke(
     let js_params = js_param_list(&in_params);
 
     let return_type = method.return_type.as_ref();
-    let is_async = return_type.is_some_and(|rt| rt.is_async());
+    let is_with_progress = return_type.is_some_and(|rt| matches!(rt,
+        TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)));
+    let is_async = return_type.is_some_and(|rt| rt.is_async()) && !is_with_progress;
 
     let mut out = String::new();
     let statics_call = format!("{cls}.s_{iface}()", cls = class.name, iface = iface.name);
@@ -756,8 +758,23 @@ fn generate_js_static_method_invoke(
             "_{}.method({}).invoke({}, [{}])",
             iface.name, method.vtable_index, statics_call, args_expr
         );
-        let converted = convert_return(&invoke_expr, return_type, is_async, known_types, deferred_names);
-        out.push_str(&format!("        return {};\n", converted));
+        if is_with_progress {
+            let inner_type = match return_type {
+                Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
+                _ => None,
+            };
+            let inner_convert = convert_return("await _op.toPromise()", inner_type, false, known_types, deferred_names);
+            out.push_str(&format!("        const _op = {};\n", invoke_expr));
+            out.push_str(         "        const _w = {\n");
+            out.push_str(         "            progress(cb) { _op.onProgress(cb); return _w; },\n");
+            out.push_str(&format!("            async toPromise() {{ return {}; }},\n", inner_convert));
+            out.push_str(         "            then(res, rej) { return _w.toPromise().then(res, rej); },\n");
+            out.push_str(         "        };\n");
+            out.push_str(         "        return _w;\n");
+        } else {
+            let converted = convert_return(&invoke_expr, return_type, is_async, known_types, deferred_names);
+            out.push_str(&format!("        return {};\n", converted));
+        }
         out.push_str("    }\n");
     }
     out
@@ -789,7 +806,9 @@ fn generate_js_method_body(
 ) -> String {
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
-    let is_async = return_type.is_some_and(|rt| rt.is_async());
+    let is_with_progress = return_type.is_some_and(|rt| matches!(rt,
+        TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)));
+    let is_async = return_type.is_some_and(|rt| rt.is_async()) && !is_with_progress;
     let has_array_out = method.params.iter().any(|p| {
         (p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill)
             && matches!(p.typ, TypeMeta::Array(_))
@@ -903,7 +922,21 @@ fn generate_js_method_body(
             iface_var, method.vtable_index, obj_expr, args_expr
         );
 
-        if !has_return && !is_async {
+        if is_with_progress {
+            // Return thenable wrapper with .progress() and .toPromise()
+            let inner_type = match return_type {
+                Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
+                _ => None,
+            };
+            let inner_convert = convert_return("await _op.toPromise()", inner_type, false, known_types, deferred_names);
+            out.push_str(&format!("        const _op = {};\n", invoke_expr));
+            out.push_str(         "        const _w = {\n");
+            out.push_str(         "            progress(cb) { _op.onProgress(cb); return _w; },\n");
+            out.push_str(&format!("            async toPromise() {{ return {}; }},\n", inner_convert));
+            out.push_str(         "            then(res, rej) { return _w.toPromise().then(res, rej); },\n");
+            out.push_str(         "        };\n");
+            out.push_str(         "        return _w;\n");
+        } else if !has_return && !is_async {
             out.push_str(&format!("        {};\n", invoke_expr));
         } else if let Some(elem) = array_out_elem {
             let arr_expr = format!("{}.asArray()", invoke_expr);

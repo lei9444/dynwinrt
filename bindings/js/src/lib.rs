@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use dynwinrt;
 use napi_derive::napi;
+use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use windows::core::{IUnknown, Interface, HSTRING};
 
 /// Shared MetadataTable — created once, used everywhere.
@@ -537,6 +538,35 @@ impl DynWinRTValue {
     let v = (&self.0).await
       .map_err(|e| napi::Error::from_reason(format!("Async operation failed: {}", e.message())))?;
     Ok(DynWinRTValue(v))
+  }
+
+  #[napi]
+  pub fn on_progress(
+    &self,
+    #[napi(ts_arg_type = "(progress: DynWinRtValue) => void")]
+    callback: napi::bindgen_prelude::Function<'static, DynWinRTValue, ()>,
+  ) -> napi::Result<()> {
+    let async_info = match &self.0 {
+      dynwinrt::WinRTValue::Async(a) => a,
+      _ => return Err(napi::Error::from_reason("onProgress: not an async value")),
+    };
+
+    let progress_type = async_info.progress_type()
+      .ok_or_else(|| napi::Error::from_reason("onProgress: not a WithProgress async type"))?;
+
+    let handler_iid = async_info.progress_handler_iid()
+      .ok_or_else(|| napi::Error::from_reason("onProgress: cannot compute progress handler IID"))?;
+
+    let tsfn = callback.build_threadsafe_function().build()?;
+    let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
+      tsfn.call(DynWinRTValue(val), ThreadsafeFunctionCallMode::NonBlocking);
+    });
+    let handler = dynwinrt::create_progress_handler(handler_iid, progress_type, progress_cb);
+
+    async_info.set_progress_handler(&handler)
+      .map_err(|e| napi::Error::from_reason(format!("SetProgress failed: {}", e.message())))?;
+
+    Ok(())
   }
 
   #[napi]
