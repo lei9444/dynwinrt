@@ -81,7 +81,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://npm.pkg.github.com
+          registry-url: https://registry.npmjs.org
 
       # Download all build artifacts
       - uses: actions/download-artifact@v4
@@ -114,14 +114,14 @@ jobs:
         working-directory: bindings/js
         run: npm publish --tag ${{ steps.npm-tag.outputs.tag }}
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Publish winrt-meta
       - name: Publish @lei9444/winrt-meta
         working-directory: tools/winrt-meta/npm
         run: npm publish --tag ${{ steps.npm-tag.outputs.tag }}
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Sample: ready-to-use test kit
   sample:
