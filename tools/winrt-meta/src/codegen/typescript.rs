@@ -429,7 +429,7 @@ fn generate_struct_helpers(s: &TypeMeta) -> String {
 
 /// Generate a TypeScript file for a single RuntimeClass.
 /// Uses `registerInterface` + `invoke` pattern.
-pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate_type_names: &HashSet<String>) -> String {
+pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate_type_names: &HashSet<String>, shared_iids: &HashSet<String>) -> String {
     // Collect structs used in all method signatures (needed for import and helpers)
     let used_structs = collect_used_structs_from_class(class);
     let has_structs = !used_structs.is_empty();
@@ -495,6 +495,15 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
             }
         }
     }
+
+    // Import shared required interfaces from their own files
+    for req_iface in &class.required_interfaces {
+        if !req_iface.iid.is_empty() && shared_iids.contains(&req_iface.iid) && !imported_names.contains(&req_iface.name) {
+            out.push_str(&format_type_import(&req_iface.name, "interface"));
+            imported_names.insert(req_iface.name.clone());
+            imported_names.insert(format!("IID_{}", req_iface.name));
+        }
+    }
     out.push('\n');
 
     // IID constants for all interfaces used by this class (skip if already imported)
@@ -534,6 +543,10 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
         out.push('\n');
     }
     for iface in &class.required_interfaces {
+        // Skip inline registration for shared interfaces (imported from shared file)
+        if !iface.iid.is_empty() && shared_iids.contains(&iface.iid) && imported_names.contains(&iface.name) {
+            continue;
+        }
         let mut reg = generate_interface_registration(iface);
         reg = reg.replacen(&format!("const {} =", iface.name), &format!("const _{} =", iface.name), 1);
         out.push_str(&reg);
@@ -631,6 +644,15 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
             out.push('\n');
             out.push_str(&generate_iface_instance_method(default_iface, &iface_var, method, known_types, &delegate_type_names));
         }
+    }
+
+    // Auto-generate close() if class implements IClosable
+    const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
+    if class.required_interfaces.iter().any(|ri| ri.iid == ICLOSABLE_IID) {
+        out.push('\n');
+        out.push_str("    close(): void {\n");
+        out.push_str("        IClosable.from(this._obj).close();\n");
+        out.push_str("    }\n");
     }
 
     // .as() method for accessing non-default interfaces

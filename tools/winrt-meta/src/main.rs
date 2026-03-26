@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -145,7 +145,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                generate_for_types(&winmd, output_dir, classes, Vec::new(), Vec::new(), &lang);
+                let _ = generate_for_types(&winmd, output_dir, classes, Vec::new(), Vec::new(), &lang);
             } else {
                 // Determine which namespaces to generate
                 let namespaces = match namespace {
@@ -254,7 +254,43 @@ fn generate_for_types(
         .map(|i| i.name.clone())
         .collect();
 
+    // Compute shared required interfaces (referenced by 2+ classes → generate standalone file)
+    let mut req_iface_count: HashMap<String, (&meta::InterfaceMeta, usize)> = HashMap::new();
+    for class in &all_classes {
+        for ri in &class.required_interfaces {
+            if ri.iid.is_empty() { continue; }
+            req_iface_count.entry(ri.iid.clone())
+                .and_modify(|(_, c)| *c += 1)
+                .or_insert((ri, 1));
+        }
+    }
+    let shared_iids: HashSet<String> = req_iface_count.iter()
+        .filter(|(_, (_, count))| *count >= 2)
+        .map(|(iid, _)| iid.clone())
+        .collect();
+
+    // Generate standalone files for shared required interfaces
+    let shared_interfaces: Vec<meta::InterfaceMeta> = req_iface_count.iter()
+        .filter(|(_, (_, count))| *count >= 2)
+        .map(|(_, (iface, _))| (*iface).clone())
+        .collect();
+    for iface in &shared_interfaces {
+        known_types.insert(iface.name.clone());
+    }
+
     let ext = if lang == "js" { "js" } else { "ts" };
+
+    for iface in &shared_interfaces {
+        let code = if lang == "js" {
+            javascript::generate_interface(iface, &known_types, &delegate_type_names)
+        } else {
+            typescript::generate_interface(iface, &known_types, &delegate_type_names)
+        };
+        let filename = format!("{}.{}", iface.name, ext);
+        let filepath = output_dir.join(&filename);
+        fs::write(&filepath, &code).expect("Failed to write shared interface file");
+        println!("Generated shared {}", filepath.display());
+    }
 
     for iface in &all_interfaces {
         let code = if lang == "js" {
@@ -286,9 +322,9 @@ fn generate_for_types(
 
     for class in &all_classes {
         let code = if lang == "js" {
-            javascript::generate_class(class, &known_types, &delegate_type_names)
+            javascript::generate_class(class, &known_types, &delegate_type_names, &shared_iids)
         } else {
-            typescript::generate_class(class, &known_types, &delegate_type_names)
+            typescript::generate_class(class, &known_types, &delegate_type_names, &shared_iids)
         };
         let filename = format!("{}.{}", class.name, ext);
         let filepath = output_dir.join(&filename);
