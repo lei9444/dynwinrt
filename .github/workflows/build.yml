@@ -97,6 +97,16 @@ jobs:
           name: winrt-meta-arm64
           path: tools/winrt-meta/npm/bin/arm64
 
+      # Extract version from tag and update package.json files
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "Publishing version: $VERSION"
+          npm --no-git-tag-version -w bindings/js version "$VERSION" 2>/dev/null || \
+            node -e "const f='bindings/js/package.json';const p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+          node -e "const f='tools/winrt-meta/npm/package.json';const p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+
       # Determine npm tag: prerelease versions get "alpha"/"beta"/etc, releases get "latest"
       - name: Determine npm tag
         id: npm-tag
