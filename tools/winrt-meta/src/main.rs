@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 use winrt_meta::codegen::typescript;
 use winrt_meta::codegen::javascript;
+use winrt_meta::codegen::javascript_esm;
 use winrt_meta::meta;
 use winrt_meta::types::TypeMeta;
 
@@ -62,7 +63,7 @@ enum Commands {
         class_name: Option<String>,
 
         /// Target language
-        #[arg(long, default_value = "ts", value_parser = ["ts", "js"])]
+        #[arg(long, default_value = "ts", value_parser = ["ts", "js", "jsm"])]
         lang: String,
 
         /// Output directory for generated .ts or .js files
@@ -131,7 +132,7 @@ fn main() {
             let output_dir = Path::new(&output);
             fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
-            let ext = if lang == "js" { "js" } else { "ts" };
+            let ext = if lang == "js" { "js" } else if lang == "jsm" { "mjs" } else { "ts" };
 
             if let Some(ref cls) = class_name {
                 // Single class mode
@@ -155,6 +156,8 @@ fn main() {
                     let existing = fs::read_to_string(&index_path).expect("Failed to read index file");
                     let updated = if lang == "js" {
                         javascript::append_to_index(&existing, &all_classes, &deps.interfaces, &deps.enums)
+                    } else if lang == "jsm" {
+                        javascript_esm::append_to_index(&existing, &all_classes, &deps.interfaces, &deps.enums)
                     } else {
                         typescript::append_to_index(&existing, &all_classes, &deps.interfaces, &deps.enums)
                     };
@@ -220,12 +223,22 @@ fn main() {
 
                     let index_code = if lang == "js" {
                         javascript::generate_index(&all_classes, &all_interfaces, &all_enums)
+                    } else if lang == "jsm" {
+                        javascript_esm::generate_index(&all_classes, &all_interfaces, &all_enums)
                     } else {
                         typescript::generate_index(&all_classes, &all_interfaces, &all_enums)
                     };
                     let index_path = output_dir.join(format!("index.{}", ext));
                     fs::write(&index_path, &index_code).expect("Failed to write index file");
                     println!("Generated {}", index_path.display());
+
+                    // Generate package.json for ESM directory import support
+                    if lang == "jsm" {
+                        let pkg = format!("{{ \"type\": \"module\", \"exports\": \"./index.{}\" }}\n", ext);
+                        let pkg_path = output_dir.join("package.json");
+                        fs::write(&pkg_path, &pkg).expect("Failed to write package.json");
+                        println!("Generated {}", pkg_path.display());
+                    }
                 }
 
                 println!(
@@ -293,11 +306,13 @@ fn generate_for_types(
         known_types.insert(iface.name.clone());
     }
 
-    let ext = if lang == "js" { "js" } else { "ts" };
+    let ext = if lang == "js" { "js" } else if lang == "jsm" { "mjs" } else { "ts" };
 
     for iface in &shared_interfaces {
         let code = if lang == "js" {
             javascript::generate_interface(iface, &known_types, &delegate_type_names)
+        } else if lang == "jsm" {
+            javascript_esm::generate_interface(iface, &known_types, &delegate_type_names)
         } else {
             typescript::generate_interface(iface, &known_types, &delegate_type_names)
         };
@@ -310,6 +325,8 @@ fn generate_for_types(
     for iface in &all_interfaces {
         let code = if lang == "js" {
             javascript::generate_interface(iface, &known_types, &delegate_type_names)
+        } else if lang == "jsm" {
+            javascript_esm::generate_interface(iface, &known_types, &delegate_type_names)
         } else {
             typescript::generate_interface(iface, &known_types, &delegate_type_names)
         };
@@ -323,6 +340,8 @@ fn generate_for_types(
         if let TypeMeta::Enum { name, .. } = en {
             let code_opt = if lang == "js" {
                 javascript::generate_enum(en)
+            } else if lang == "jsm" {
+                javascript_esm::generate_enum(en)
             } else {
                 typescript::generate_enum(en)
             };
@@ -338,6 +357,8 @@ fn generate_for_types(
     for class in &all_classes {
         let code = if lang == "js" {
             javascript::generate_class(class, &known_types, &delegate_type_names, &shared_iids)
+        } else if lang == "jsm" {
+            javascript_esm::generate_class(class, &known_types, &delegate_type_names, &shared_iids)
         } else {
             typescript::generate_class(class, &known_types, &delegate_type_names, &shared_iids)
         };
