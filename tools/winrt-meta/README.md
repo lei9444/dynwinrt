@@ -1,57 +1,58 @@
 # winrt-meta
 
-Read Windows metadata (`.winmd`) files and generate typed TypeScript bindings that use `dynwinrt-js` at runtime.
+Read Windows metadata (`.winmd`) files and generate typed bindings that use `dynwinrt-js` at runtime.
 
-## Build
+## Install
 
 ```bash
-cargo build -p winrt-meta --release
+npm install -D winrt-meta
 ```
 
 ## Usage
 
 ```bash
-cargo run -p winrt-meta --release -- generate [OPTIONS]
+npx winrt-meta generate [OPTIONS]
 ```
 
 ### Arguments
 
 | Argument | Required | Description |
 |---|---|---|
-| `--winmd` | Yes | Path to `.winmd` file(s), separated by `;` |
-| `--namespace` | Yes | WinRT namespace to generate |
-| `--class` | No | Specific class name (generates its dependencies too) |
-| `--lang` | No | Target language: `ts` (default). Only `ts` is supported currently |
+| `--winmd` | No | Path to `.winmd` file(s), separated by `;`. Auto-detects Windows SDK if omitted |
+| `--folder` | No | Directory containing `.winmd` files |
+| `--namespace` | No | Generate only this namespace. If omitted, generates all non-Windows namespaces |
+| `--class` | No | Specific class name (requires `--namespace`) |
+| `--lang` | No | Target language: `ts` (default), `js` (ESM), `cjs` (CommonJS) |
 | `--output` | No | Output directory (default: `./generated`) |
+
+When `--lang js` or `--lang cjs` is specified, TypeScript is generated internally and compiled to JavaScript via SWC. The intermediate `.ts` files are not written to the output directory.
 
 ### Examples
 
-Generate bindings for a specific class:
+Generate JavaScript (ESM) bindings from a WinAppSDK metadata folder:
 
 ```bash
-cargo run -p winrt-meta --release -- generate \
-  --winmd "C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd" \
-  --namespace "Windows.Storage.Pickers" \
-  --class "FileOpenPicker" \
-  --output ./generated/Windows.Storage.Pickers
+npx winrt-meta generate \
+  --folder path/to/metadata \
+  --output ./generated-js \
+  --lang js
 ```
 
-Generate bindings for an entire namespace:
+Generate TypeScript bindings for a specific class:
 
 ```bash
-cargo run -p winrt-meta --release -- generate \
-  --winmd "C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd" \
-  --namespace "Windows.Web.Http" \
-  --output ./generated/Windows.Web.Http
+npx winrt-meta generate \
+  --namespace Windows.Storage \
+  --class StorageFile \
+  --output ./generated-ts
 ```
 
-Generate with multiple `.winmd` files (e.g. Windows SDK + WinAppSDK):
+Generate all namespaces from multiple `.winmd` files:
 
 ```bash
-cargo run -p winrt-meta --release -- generate \
-  --winmd "C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd;path\to\Microsoft.WindowsAppSDK.winmd" \
-  --namespace "Microsoft.UI.Xaml" \
-  --output ./generated/Microsoft.UI.Xaml
+npx winrt-meta generate \
+  --winmd "path/to/Windows.winmd;path/to/Microsoft.WindowsAppSDK.winmd" \
+  --output ./generated-ts
 ```
 
 ## Output
@@ -59,35 +60,37 @@ cargo run -p winrt-meta --release -- generate \
 For each WinRT class, the tool generates:
 
 - **Interface registration** -- `DynWinRtType.registerInterface()` with all methods and type signatures
-- **Wrapper class** -- TypeScript class with typed properties and methods
-- **Factory methods** -- Static methods for object creation via activation factory
-- **Enums** -- TypeScript `enum` declarations
-- **Collection types** -- `IVector<T>`, `IVectorView<T>`, `IMap<K,V>`, etc. in `_collections.ts`
-- **Index file** -- `index.ts` re-exporting all generated types
+- **Wrapper class** -- typed class with properties and methods
+- **Factory methods** -- static methods for object creation via activation factory
+- **Enums** -- enum declarations
+- **Collection types** -- `IVector<T>`, `IVectorView<T>`, `IMap<K,V>`, etc.
+- **Index file** -- re-exporting all generated types
 
-Dependencies are resolved automatically -- specifying `--class FileOpenPicker` will also generate `StorageFile`, `StorageFolder`, `Uri`, enums, and other referenced types.
+Dependencies are resolved automatically -- specifying `--class StorageFile` will also generate referenced types like `Uri`, enums, and interfaces.
 
-## Using Generated Bindings
-
-```typescript
-import { roInitialize } from 'dynwinrt-js';
-import { FileOpenPicker } from './generated/Windows.Storage.Pickers/FileOpenPicker';
-import { PickerViewMode } from './generated/Windows.Storage.Pickers/PickerViewMode';
-
-roInitialize(1); // Initialize WinRT (MTA)
-
-const picker = FileOpenPicker.create();
-picker.viewMode = PickerViewMode.Thumbnail;
-picker.fileTypeFilter.append('.png');
-picker.fileTypeFilter.append('.jpg');
-
-const file = await picker.pickSingleFileAsync();
-```
-
-### Local Development
-
-Generated files import from `'dynwinrt-js'`. For local development without the npm package, fix the import path:
+## Build from Source
 
 ```bash
-find generated -name "*.ts" -exec sed -i "s|from 'dynwinrt-js'|from '../../dist/index.js'|g" {} +
+cargo build -p winrt-meta --release
 ```
+
+The compiled executable needs to be copied into the npm package before publishing:
+
+```bash
+# x64
+cargo build -p winrt-meta --release
+cp target/release/winrt-meta.exe tools/winrt-meta/npm/bin/x64/
+
+# arm64
+cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
+cp target/aarch64-pc-windows-msvc/release/winrt-meta.exe tools/winrt-meta/npm/bin/arm64/
+```
+
+Then publish:
+
+```bash
+cd tools/winrt-meta/npm
+npm publish
+```
+
+In CI, this is handled automatically by the build workflow.

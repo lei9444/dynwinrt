@@ -19,12 +19,17 @@
     "win32"
   ],
   "bin": {
-    "winrt-meta": "./bin/winrt-meta.js"
+    "winrt-meta": "./cli.js"
   },
   "files": [
     "bin/",
+    "lib/",
+    "cli.js",
     "LICENSE"
   ],
+  "dependencies": {
+    "@swc/core": "^1.15.21"
+  },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public"

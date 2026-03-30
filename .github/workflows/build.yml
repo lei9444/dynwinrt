@@ -11,33 +11,26 @@ on:
     branches: [main]
 
 jobs:
-  # winrt-meta x64
-  winrt-meta-x64:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build -p winrt-meta --release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: winrt-meta-x64
-          path: target/release/winrt-meta.exe
-
-  # winrt-meta arm64
-  winrt-meta-arm64:
+  # winrt-meta (x64 + arm64)
+  winrt-meta:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-pc-windows-msvc
-      - name: Build
-        run: cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
+      - name: Build x64
+        run: |
+          cargo build -p winrt-meta --release
+          cp target/release/winrt-meta.exe tools/winrt-meta/npm/bin/x64/
+      - name: Build arm64
+        run: |
+          cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
+          cp target/aarch64-pc-windows-msvc/release/winrt-meta.exe tools/winrt-meta/npm/bin/arm64/
       - uses: actions/upload-artifact@v4
         with:
-          name: winrt-meta-arm64
-          path: target/aarch64-pc-windows-msvc/release/winrt-meta.exe
+          name: winrt-meta
+          path: tools/winrt-meta/npm/
 
   # dynwinrt-js (x64 + arm64 in one job)
   dynwinrt-js:
@@ -72,7 +65,7 @@ jobs:
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
-    needs: [winrt-meta-x64, winrt-meta-arm64, dynwinrt-js]
+    needs: [winrt-meta, dynwinrt-js]
     permissions:
       contents: read
       id-token: write
@@ -90,12 +83,8 @@ jobs:
           path: bindings/js/dist
       - uses: actions/download-artifact@v4
         with:
-          name: winrt-meta-x64
-          path: tools/winrt-meta/npm/bin/x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: winrt-meta-arm64
-          path: tools/winrt-meta/npm/bin/arm64
+          name: winrt-meta
+          path: tools/winrt-meta/npm
 
       # Extract version from tag and update package.json files
       - name: Set version from tag
@@ -132,15 +121,15 @@ jobs:
   # Sample: ready-to-use test kit
   sample:
     runs-on: ubuntu-latest
-    needs: [winrt-meta-x64, dynwinrt-js]
+    needs: [winrt-meta, dynwinrt-js]
     steps:
       - uses: actions/checkout@v4
 
       # Download build artifacts
       - uses: actions/download-artifact@v4
         with:
-          name: winrt-meta-x64
-          path: sample
+          name: winrt-meta
+          path: sample/winrt-meta
       - uses: actions/download-artifact@v4
         with:
           name: dynwinrt-js
